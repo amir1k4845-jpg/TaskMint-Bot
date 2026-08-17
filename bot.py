@@ -1415,3 +1415,59 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context,
             withdrawal_id
         )
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(update, context):
+    print("ERROR:", context.error)
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    print("Starting TaskMint Bot...")
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            all_text
+        )
+    )
+
+    app.add_error_handler(
+        error_handler
+    )
+
+    print("TaskMint Bot is running!")
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
