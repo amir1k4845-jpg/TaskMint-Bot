@@ -1454,7 +1454,7 @@ def main():
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            all_text
+            
         )
     )
 
