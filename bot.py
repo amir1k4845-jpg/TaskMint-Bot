@@ -1446,27 +1446,23 @@ def main():
     )
 
     app.add_handler(
-        CallbackQueryHandler(
-            callback_handler
-        )
-    )
+    CallbackQueryHandler(callback_handler)
+)
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            
-        )
+app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        all_text
     )
+)
 
-    app.add_error_handler(
-        error_handler
-    )
+app.add_error_handler(error_handler)
 
-    print("TaskMint Bot is running!")
+print("TaskMint Bot is running!")
 
-    app.run_polling(
-        drop_pending_updates=True
-    )
+app.run_polling(
+    drop_pending_updates=True
+)
 
 
 if __name__ == "__main__":
