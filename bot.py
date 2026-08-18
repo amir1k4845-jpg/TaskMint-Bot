@@ -1095,3 +1095,812 @@ async def task_list(update, context):
             ]
         ])
         )
+# =========================
+# TASK DELETE MENU
+# =========================
+
+async def task_delete_menu(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    rows = get_channel_tasks()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "🗑️ Delete Task\n\n"
+            "কোনো active task নেই।"
+        )
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"🗑️ #{row['id']} {row['title']}",
+                callback_data=f"delete_task_{row['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 Task Manager",
+            callback_data="manage_tasks"
+        )
+    ])
+
+    await query.edit_message_text(
+        "🗑️ DELETE TASK\n\n"
+        "যে Task delete করতে চাও সেটি নির্বাচন করো:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(update, context):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized!",
+            show_alert=True
+        )
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    # Task Manager
+    if data == "manage_tasks":
+
+        await task_manager_menu(
+            update,
+            context
+        )
+        return
+
+    if data == "task_add":
+
+        await add_task_start(
+            update,
+            context
+        )
+        return
+
+    if data == "task_list":
+
+        await task_list(
+            update,
+            context
+        )
+        return
+
+    if data == "task_delete":
+
+        await task_delete_menu(
+            update,
+            context
+        )
+        return
+
+    if data.startswith("delete_task_"):
+
+        task_id = int(
+            data.split("_")[2]
+        )
+
+        delete_channel_task(task_id)
+
+        await query.edit_message_text(
+            "✅ Task Deleted Successfully!",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Task Manager",
+                        callback_data="manage_tasks"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # Admin Home
+    if data == "admin_home":
+
+        await admin_panel(
+            update,
+            context
+        )
+        return
+
+    # Total Users
+    if data == "admin_users":
+
+        conn = db()
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        conn.close()
+
+        await query.edit_message_text(
+            f"👥 Total Users: {total}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # Statistics
+    if data == "admin_stats":
+
+        conn = db()
+
+        users = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        total_points = conn.execute(
+            "SELECT COALESCE(SUM(points),0) FROM users"
+        ).fetchone()[0]
+
+        pending = conn.execute("""
+            SELECT COUNT(*)
+            FROM withdrawals
+            WHERE status='pending'
+        """).fetchone()[0]
+
+        conn.close()
+
+        await query.edit_message_text(
+            "📊 BOT STATISTICS\n\n"
+            f"👥 Users: {users}\n"
+            f"💰 Total Points: {total_points}\n"
+            f"💳 Pending Withdrawals: {pending}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # Pending Withdrawals
+    if data == "admin_withdrawals":
+
+        conn = db()
+
+        rows = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE status='pending'
+            ORDER BY id DESC
+            LIMIT 10
+        """).fetchall()
+
+        conn.close()
+
+        if not rows:
+
+            text = (
+                "💳 Pending Withdrawals\n\n"
+                "No pending withdrawals."
+            )
+
+        else:
+
+            text = "💳 PENDING WITHDRAWALS\n\n"
+
+            for row in rows:
+
+                text += (
+                    f"#{row['id']} - "
+                    f"{row['amount']} Points - "
+                    f"{row['method']}\n"
+                )
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # Broadcast
+    if data == "admin_broadcast":
+
+        context.user_data[
+            "broadcast"
+        ] = True
+
+        await query.edit_message_text(
+            "📢 BROADCAST\n\n"
+            "এখন যে message সবাইকে পাঠাতে চাও "
+            "সেটা পাঠাও।"
+        )
+
+        return
+
+    # Approve
+    if data.startswith("approve_"):
+
+        withdrawal_id = int(
+            data.split("_")[1]
+        )
+
+        conn = db()
+
+        row = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+        """, (
+            withdrawal_id,
+        )).fetchone()
+
+        if not row:
+
+            conn.close()
+
+            await query.edit_message_text(
+                "❌ Withdrawal not found."
+            )
+            return
+
+        if row["status"] != "pending":
+
+            conn.close()
+
+            await query.answer(
+                "Already processed.",
+                show_alert=True
+            )
+            return
+
+        conn.execute("""
+            UPDATE withdrawals
+            SET status='approved'
+            WHERE id=?
+        """, (
+            withdrawal_id,
+        ))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            query.message.text +
+            "\n\n✅ STATUS: APPROVED"
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "✅ Withdrawal Approved!\n\n"
+                    f"💰 Amount: {row['amount']} Points\n"
+                    f"💳 Method: {row['method']}\n\n"
+                    "Admin তোমার request approve করেছে।"
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                "Approve notification error:",
+                e
+            )
+
+        return
+
+    # Reject
+    if data.startswith("reject_"):
+
+        withdrawal_id = int(
+            data.split("_")[1]
+        )
+
+        conn = db()
+
+        row = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+        """, (
+            withdrawal_id,
+        )).fetchone()
+
+        if not row:
+
+            conn.close()
+
+            await query.edit_message_text(
+                "❌ Withdrawal not found."
+            )
+            return
+
+        if row["status"] != "pending":
+
+            conn.close()
+
+            await query.answer(
+                "Already processed.",
+                show_alert=True
+            )
+            return
+
+        conn.execute("""
+            UPDATE withdrawals
+            SET status='rejected'
+            WHERE id=?
+        """, (
+            withdrawal_id,
+        ))
+
+        conn.execute("""
+            UPDATE users
+            SET points=points+?
+            WHERE user_id=?
+        """, (
+            row["amount"],
+            row["user_id"]
+        ))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            query.message.text +
+            "\n\n❌ STATUS: REJECTED\n"
+            f"↩️ {row['amount']} Points returned."
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "❌ Withdrawal Rejected\n\n"
+                    f"↩️ {row['amount']} Points "
+                    "তোমার balance-এ ফেরত দেওয়া হয়েছে।"
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                "Reject notification error:",
+                e
+            )
+
+        return
+
+
+# =========================
+# ADMIN TEXT INPUT
+# =========================
+
+async def admin_text_handler(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    text = update.message.text.strip()
+
+    step = context.user_data.get(
+        "task_add_step"
+    )
+
+    # Channel
+    if step == "channel":
+
+        context.user_data[
+            "new_channel"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "url"
+
+        await update.message.reply_text(
+            "🔗 এখন Channel-এর link পাঠাও।\n\n"
+            "Example:\n"
+            "https://t.me/MyChannel"
+        )
+
+        return
+
+    # URL
+    if step == "url":
+
+        context.user_data[
+            "new_channel_url"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "title"
+
+        await update.message.reply_text(
+            "📝 এখন Task-এর নাম পাঠাও।\n\n"
+            "Example:\n"
+            "📢 Join My Channel"
+        )
+
+        return
+
+    # Title
+    if step == "title":
+
+        context.user_data[
+            "new_task_title"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "reward"
+
+        await update.message.reply_text(
+            "💰 এখন কত Points reward দিতে চাও?\n\n"
+            "Example: 10"
+        )
+
+        return
+
+    # Reward
+    if step == "reward":
+
+        try:
+
+            reward = int(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Reward শুধু সংখ্যা হতে হবে।\n\n"
+                "Example: 10"
+            )
+
+            return
+
+        if reward <= 0:
+
+            await update.message.reply_text(
+                "❌ Reward 0-এর বেশি হতে হবে।"
+            )
+
+            return
+
+        channel = context.user_data[
+            "new_channel"
+        ]
+
+        url = context.user_data[
+            "new_channel_url"
+        ]
+
+        title = context.user_data[
+            "new_task_title"
+        ]
+
+        add_channel_task(
+            channel,
+            url,
+            title,
+            reward
+        )
+
+        context.user_data.pop(
+            "task_add_step",
+            None
+        )
+
+        context.user_data.pop(
+            "new_channel",
+            None
+        )
+
+        context.user_data.pop(
+            "new_channel_url",
+            None
+        )
+
+        context.user_data.pop(
+            "new_task_title",
+            None
+        )
+
+        await update.message.reply_text(
+            "🎉 TASK ADDED SUCCESSFULLY!\n\n"
+            f"📢 Channel: {channel}\n"
+            f"📝 Title: {title}\n"
+            f"💰 Reward: {reward} Points",
+            reply_markup=MARKUP
+        )
+
+        return
+
+
+# =========================
+# BROADCAST
+# =========================
+
+async def broadcast_handler(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.user_data.get(
+        "broadcast"
+    ):
+        return
+
+    context.user_data[
+        "broadcast"
+    ] = False
+
+    conn = db()
+
+    users = conn.execute(
+        "SELECT user_id FROM users"
+    ).fetchall()
+
+    conn.close()
+
+    sent = 0
+    failed = 0
+
+    for user in users:
+
+        try:
+
+            await context.bot.copy_message(
+                chat_id=user["user_id"],
+                from_chat_id=update.effective_chat.id,
+                message_id=update.message.message_id
+            )
+
+            sent += 1
+
+        except Exception:
+
+            failed += 1
+
+    await update.message.reply_text(
+        "📢 Broadcast Finished!\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+
+# =========================
+# NORMAL BUTTONS
+# =========================
+
+async def button_handler(update, context):
+
+    if not update.message:
+        return
+
+    text = update.message.text
+
+    if text == "💰 Earn Tasks":
+
+        await earn_tasks(
+            update,
+            context
+        )
+
+    elif text == "👥 Refer & Earn":
+
+        await referral(
+            update,
+            context
+        )
+
+    elif text == "🎁 Daily Bonus":
+
+        await daily_bonus(
+            update,
+            context
+        )
+
+    elif text == "📊 My Balance":
+
+        user_id = update.effective_user.id
+
+        await update.message.reply_text(
+            "📊 MY BALANCE\n\n"
+            f"💰 Points: {points(user_id)}"
+        )
+
+    elif text == "ℹ️ Help":
+
+        await help_cmd(
+            update,
+            context
+        )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not TOKEN:
+
+        raise ValueError(
+            "BOT_TOKEN is not set"
+        )
+
+    init_db()
+
+    create_default_task()
+
+    threading.Thread(
+        target=web_server,
+        daemon=True
+    ).start()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # Commands
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_cmd
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_panel
+        )
+    )
+
+    # Withdraw
+
+    withdraw_conversation = ConversationHandler(
+
+        entry_points=[
+            MessageHandler(
+                filters.Regex(
+                    "^💳 Withdraw$"
+                ),
+                withdraw_start
+            )
+        ],
+
+        states={
+
+            AMOUNT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_amount
+                )
+            ],
+
+            METHOD: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_method
+                )
+            ],
+
+            ACCOUNT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_account
+                )
+            ],
+        },
+
+        fallbacks=[]
+    )
+
+    app.add_handler(
+        withdraw_conversation
+    )
+
+    # Task callbacks
+
+    app.add_handler(
+        CallbackQueryHandler(
+            task_callback,
+            pattern=r"^check_task_"
+        )
+    )
+
+    # Admin callbacks
+
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_callback,
+            pattern=r"^(manage_tasks|task_|admin_|approve_|reject_)"
+        )
+    )
+
+    # Admin text input
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            admin_text_handler
+        ),
+        group=1
+    )
+
+    # Broadcast
+    app.add_handler(
+        MessageHandler(
+            filters.ALL,
+            broadcast_handler
+        ),
+        group=2
+    )
+
+    # Normal buttons
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            button_handler
+        ),
+        group=3
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
