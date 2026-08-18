@@ -2,12 +2,18 @@ import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -36,6 +42,13 @@ def start_web_server():
 
 
 # =========================
+# User Points
+# =========================
+
+user_points = {}
+
+
+# =========================
 # Main Menu
 # =========================
 
@@ -52,10 +65,15 @@ reply_markup = ReplyKeyboardMarkup(
 
 
 # =========================
-# /start
+# Start
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    if user_id not in user_points:
+        user_points[user_id] = 0
 
     await update.message.reply_text(
         "🎉 Welcome to TaskMint Bot!\n\n"
@@ -68,7 +86,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# /help
+# Help
 # =========================
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -76,16 +94,131 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ TaskMint Bot Help\n\n"
         "/start - Bot শুরু করুন\n"
-        "/help - Help দেখুন\n\n"
-        "কোনো সমস্যা হলে Admin-এর সাথে যোগাযোগ করুন।"
+        "/help - Help দেখুন"
     )
 
 
 # =========================
-# Menu Button Handler
+# Earn Tasks
 # =========================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def earn_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📢 Join Telegram Channel (+10 Points)",
+                callback_data="task_join"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Back to Menu",
+                callback_data="back_menu"
+            )
+        ]
+    ]
+
+    await update.message.reply_text(
+        "💰 Earn Tasks\n\n"
+        "নিচের Task complete করে Points earn করো 👇\n\n"
+        "📢 Join Telegram Channel\n"
+        "💰 Reward: 10 Points",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# Task Callback
+# =========================
+
+async def task_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    # Join task
+    if query.data == "task_join":
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "📢 Join Channel",
+                    url="https://t.me/TaskMintBot"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Check Task",
+                    callback_data="check_join"
+                )
+            ]
+        ]
+
+        await query.edit_message_text(
+            "📢 Join Telegram Channel\n\n"
+            "1️⃣ নিচের Join Channel button-এ চাপ দাও।\n"
+            "2️⃣ Channel-এ Join করো।\n"
+            "3️⃣ তারপর নিচের ✅ Check Task button চাপো।\n\n"
+            "💰 Reward: 10 Points",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    # Check task
+    elif query.data == "check_join":
+
+        # Already completed
+        completed_tasks = context.user_data.setdefault(
+            "completed_tasks",
+            set()
+        )
+
+        if "join_task" in completed_tasks:
+
+            await query.edit_message_text(
+                "⚠️ তুমি এই Task আগেই complete করেছো!\n\n"
+                "এই Task থেকে আর Points পাওয়া যাবে না।"
+            )
+
+            return
+
+        # Give reward
+        user_points[user_id] = user_points.get(user_id, 0) + 10
+
+        completed_tasks.add("join_task")
+
+        await query.edit_message_text(
+            "🎉 Task Completed!\n\n"
+            "✅ তুমি পেয়েছো +10 Points\n\n"
+            f"💰 Total Points: {user_points[user_id]}"
+        )
+
+    # Back
+    elif query.data == "back_menu":
+
+        await query.message.delete()
+
+        await query.message.reply_text(
+            "🏠 Main Menu\n\n"
+            "নিচের Menu থেকে একটি option বেছে নাও 👇",
+            reply_markup=reply_markup
+        )
+
+
+# =========================
+# Button Handler
+# =========================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
@@ -95,13 +228,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Earn Tasks
     if text == "💰 Earn Tasks":
 
-        await update.message.reply_text(
-            "💰 Earn Tasks\n\n"
-            "📌 বর্তমানে কোনো Task available নেই।\n"
-            "শীঘ্রই নতুন Tasks যোগ করা হবে!"
-        )
+        await earn_tasks(update, context)
 
-    # Referral
+    # Refer
     elif text == "👥 Refer & Earn":
 
         user_id = update.effective_user.id
@@ -110,17 +239,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👥 Refer & Earn\n\n"
             "তোমার Referral Link:\n"
             f"https://t.me/TaskMintBot?start={user_id}\n\n"
-            "বন্ধুদের এই link দিয়ে invite করো।\n"
-            "Referral system শীঘ্রই fully চালু হবে।"
+            "Referral system শীঘ্রই চালু হবে।"
         )
 
     # Withdraw
     elif text == "💳 Withdraw":
 
+        points = user_points.get(
+            update.effective_user.id,
+            0
+        )
+
         await update.message.reply_text(
             "💳 Withdraw\n\n"
-            "তোমার বর্তমান Balance: 0 Points\n\n"
-            "⚠️ Withdrawal করতে হলে minimum points লাগবে।\n"
+            f"💰 Your Points: {points}\n\n"
             "Withdrawal system শীঘ্রই চালু হবে।"
         )
 
@@ -129,16 +261,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "🎁 Daily Bonus\n\n"
-            "আজকের Bonus: 0 Points\n\n"
             "Daily Bonus system শীঘ্রই চালু হবে।"
         )
 
     # Balance
     elif text == "📊 My Balance":
 
+        points = user_points.get(
+            update.effective_user.id,
+            0
+        )
+
         await update.message.reply_text(
             "📊 My Balance\n\n"
-            "💰 Points: 0\n"
+            f"💰 Points: {points}\n"
             "💵 Balance: $0.00"
         )
 
@@ -157,19 +293,16 @@ def main():
     if not TOKEN:
         raise ValueError(
             "BOT_TOKEN is not set. "
-            "Please add BOT_TOKEN in Render Environment Variables."
+            "Add BOT_TOKEN in Render Environment Variables."
         )
 
-    # Start Render health server
     threading.Thread(
         target=start_web_server,
         daemon=True
     ).start()
 
-    # Create Telegram application
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Commands
     app.add_handler(
         CommandHandler("start", start)
     )
@@ -178,7 +311,10 @@ def main():
         CommandHandler("help", help_command)
     )
 
-    # Buttons / Text
+    app.add_handler(
+        CallbackQueryHandler(task_callback)
+    )
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -188,7 +324,6 @@ def main():
 
     print("TaskMint Bot is running...")
 
-    # Start bot
     app.run_polling()
 
 
