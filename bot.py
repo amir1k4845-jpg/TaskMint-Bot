@@ -273,3 +273,569 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 init_db()
+# =========================
+# EARN TASKS
+# =========================
+
+async def earn_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📢 Join Channel",
+                url=CHANNEL_LINK
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ Check & Earn",
+                callback_data="check_channel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="back_menu"
+            )
+        ]
+    ]
+
+    await update.message.reply_text(
+        "💰 EARN TASKS\n\n"
+        "📢 Task: Join our Telegram channel\n\n"
+        f"🔗 Channel: {CHANNEL_USERNAME}\n\n"
+        "1️⃣ Join the channel\n"
+        "2️⃣ Click 'Check & Earn'\n"
+        "3️⃣ If you joined successfully, points will be added.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# CHECK CHANNEL
+# =========================
+
+async def check_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=CHANNEL_USERNAME,
+            user_id=user_id
+        )
+
+        status = member.status
+
+        if status in ["member", "administrator", "creator"]:
+
+            conn = get_db()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT points
+                FROM users
+                WHERE user_id = ?
+                """,
+                (user_id,)
+            )
+
+            user = cursor.fetchone()
+
+            if not user:
+                conn.close()
+
+                add_user(
+                    user_id,
+                    query.from_user.username,
+                    query.from_user.first_name
+                )
+
+                user_points = 0
+
+            else:
+                user_points = user["points"]
+                conn.close()
+
+            # Prevent earning repeatedly
+            context.user_data.setdefault(
+                "completed_tasks",
+                set()
+            )
+
+            if "channel_join" in context.user_data["completed_tasks"]:
+
+                await query.message.reply_text(
+                    "⚠️ You have already completed this task."
+                )
+
+                return
+
+            add_points(user_id, 10)
+
+            context.user_data["completed_tasks"].add(
+                "channel_join"
+            )
+
+            await query.message.reply_text(
+                "🎉 Task Completed!\n\n"
+                "✅ Channel join verified.\n"
+                "💰 +10 points added!\n\n"
+                f"💳 Your balance: {get_points(user_id)} points"
+            )
+
+        else:
+
+            await query.message.reply_text(
+                "❌ You haven't joined the channel yet.\n\n"
+                "Please join the channel first, "
+                "then click Check & Earn."
+            )
+
+    except Exception as e:
+
+        print("Channel check error:", e)
+
+        await query.message.reply_text(
+            "⚠️ Unable to verify your membership right now.\n"
+            "Please make sure you joined the channel and try again."
+        )
+
+
+# =========================
+# MY BALANCE
+# =========================
+
+async def my_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    points = get_points(user_id)
+
+    await update.message.reply_text(
+        "💳 MY BALANCE\n\n"
+        f"💰 Points: {points}\n\n"
+        "Keep completing tasks to earn more!",
+        reply_markup=back_menu()
+    )
+
+
+# =========================
+# STATISTICS
+# =========================
+
+async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT COUNT(*) AS total FROM users"
+    )
+
+    result = cursor.fetchone()
+
+    total_users = result["total"]
+
+    cursor.execute(
+        "SELECT COALESCE(SUM(points), 0) AS total_points FROM users"
+    )
+
+    result = cursor.fetchone()
+
+    total_points = result["total_points"]
+
+    conn.close()
+
+    await update.message.reply_text(
+        "📊 TASKMINT STATISTICS\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"💰 Total Points: {total_points}",
+        reply_markup=back_menu()
+    )
+
+
+# =========================
+# WITHDRAW START
+# =========================
+
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    points = get_points(user_id)
+
+    if points < 100:
+
+        await update.message.reply_text(
+            "❌ Minimum withdrawal is 100 points.\n\n"
+            f"💰 Your current balance: {points} points",
+            reply_markup=main_menu()
+        )
+
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "💎 Binance",
+                callback_data="withdraw_binance"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📱 Telegram",
+                callback_data="withdraw_telegram"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="back_menu"
+            )
+        ]
+    ]
+
+    await update.message.reply_text(
+        "💸 WITHDRAW\n\n"
+        f"💰 Available points: {points}\n\n"
+        "Select your withdrawal method:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# WITHDRAW METHOD
+# =========================
+
+async def withdraw_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    method = query.data.replace(
+        "withdraw_",
+        ""
+    )
+
+    context.user_data["withdraw_method"] = method
+
+    await query.message.reply_text(
+        f"💸 Withdrawal Method: {method.title()}\n\n"
+        "Please enter the account/address where you want "
+        "to receive your payment."
+    )
+
+    context.user_data["awaiting_withdraw_account"] = True
+
+
+# =========================
+# PROCESS WITHDRAW
+# =========================
+
+async def process_withdraw(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not context.user_data.get(
+        "awaiting_withdraw_account"
+    ):
+        return False
+
+    account = update.message.text.strip()
+
+    user = update.effective_user
+
+    user_id = user.id
+
+    method = context.user_data.get(
+        "withdraw_method",
+        "unknown"
+    )
+
+    points = get_points(user_id)
+
+    if points < 100:
+
+        context.user_data.pop(
+            "awaiting_withdraw_account",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ You don't have enough points.",
+            reply_markup=main_menu()
+        )
+
+        return True
+
+    success = remove_points(
+        user_id,
+        points
+    )
+
+    if not success:
+
+        await update.message.reply_text(
+            "❌ Withdrawal failed. Please try again."
+        )
+
+        return True
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO withdrawals
+        (user_id, username, points, method, account, status)
+        VALUES (?, ?, ?, ?, ?, 'pending')
+        """,
+        (
+            user_id,
+            user.username or "",
+            points,
+            method,
+            account
+        )
+    )
+
+    withdrawal_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    context.user_data.pop(
+        "awaiting_withdraw_account",
+        None
+    )
+
+    # Admin notification
+    if ADMIN_ID:
+
+        try:
+
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"approve_{withdrawal_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Reject",
+                        callback_data=f"reject_{withdrawal_id}"
+                    )
+                ]
+            ]
+
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🔔 NEW WITHDRAWAL\n\n"
+                    f"🆔 ID: {withdrawal_id}\n"
+                    f"👤 User ID: {user_id}\n"
+                    f"📛 Username: @{user.username or 'N/A'}\n"
+                    f"💰 Points: {points}\n"
+                    f"💳 Method: {method.title()}\n"
+                    f"📥 Account: {account}"
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except Exception as e:
+
+            print(
+                "Admin notification error:",
+                e
+            )
+
+    await update.message.reply_text(
+        "✅ Withdrawal request submitted!\n\n"
+        f"🆔 Request ID: {withdrawal_id}\n"
+        f"💰 Points: {points}\n"
+        f"💳 Method: {method.title()}\n\n"
+        "⏳ Your request is waiting for admin approval.",
+        reply_markup=main_menu()
+    )
+
+    return True
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "👥 Total Users",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💸 Pending Withdrawals",
+                callback_data="admin_pending"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            )
+        ]
+    ]
+
+    await update.message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        "Choose an option:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# ADMIN CALLBACKS
+# =========================
+
+async def admin_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.message.reply_text(
+            "❌ Unauthorized."
+        )
+
+        return
+
+    data = query.data
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if data == "admin_users":
+
+        cursor.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        )
+
+        total = cursor.fetchone()["total"]
+
+        await query.message.reply_text(
+            f"👥 TOTAL USERS\n\n{total}"
+        )
+
+    elif data == "admin_stats":
+
+        cursor.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        )
+
+        users = cursor.fetchone()["total"]
+
+        cursor.execute(
+            "SELECT COALESCE(SUM(points), 0) AS total FROM users"
+        )
+
+        points = cursor.fetchone()["total"]
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM withdrawals
+            WHERE status = 'pending'
+            """
+        )
+
+        pending = cursor.fetchone()["total"]
+
+        await query.message.reply_text(
+            "📊 ADMIN STATISTICS\n\n"
+            f"👥 Users: {users}\n"
+            f"💰 Total Points: {points}\n"
+            f"⏳ Pending Withdrawals: {pending}"
+        )
+
+    elif data == "admin_pending":
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE status = 'pending'
+            ORDER BY id DESC
+            LIMIT 20
+            """
+        )
+
+        rows = cursor.fetchall()
+
+        if not rows:
+
+            await query.message.reply_text(
+                "✅ No pending withdrawals."
+            )
+
+        else:
+
+            text = "💸 PENDING WITHDRAWALS\n\n"
+
+            for row in rows:
+
+                text += (
+                    f"🆔 {row['id']}\n"
+                    f"👤 {row['user_id']}\n"
+                    f"💰 {row['points']} points\n"
+                    f"💳 {row['method']}\n"
+                    f"📥 {row['account']}\n\n"
+                )
+
+            await query.message.reply_text(
+                text
+            )
+
+    elif data == "admin_broadcast":
+
+        context.user_data[
+            "awaiting_broadcast"
+        ] = True
+
+        await query.message.reply_text(
+            "📢 BROADCAST\n\n"
+            "Send the message you want to broadcast."
+        )
+
+    conn.close()
