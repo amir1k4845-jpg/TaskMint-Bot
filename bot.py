@@ -1160,3 +1160,682 @@ async def withdraw_account(
     return (
         ConversationHandler.END
     )
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def admin_panel(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ Unauthorized."
+        )
+
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📋 Manage Tasks",
+                callback_data="manage_tasks"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 Total Users",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👤 User Management",
+                callback_data="user_management"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📋 Users List",
+                callback_data="users_list"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Pending Withdrawals",
+                callback_data="admin_withdrawals"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            )
+        ]
+    ])
+
+    await update.message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        "TaskMint Control Center",
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# TASK MANAGER
+# =========================
+
+async def task_manager_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "➕ Add Channel Task",
+                callback_data="task_add"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📋 Active Tasks",
+                callback_data="task_list"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑️ Delete Task",
+                callback_data="task_delete"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Admin Panel",
+                callback_data="admin_home"
+            )
+        ]
+    ])
+
+    await query.edit_message_text(
+        "📋 TASK MANAGER\n\n"
+        "এখান থেকে Channel Task "
+        "manage করতে পারবে।",
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# ADD TASK START
+# =========================
+
+async def add_task_start(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data[
+        "task_add_step"
+    ] = "channel"
+
+    await query.edit_message_text(
+        "➕ ADD CHANNEL TASK\n\n"
+        "প্রথমে Channel Username পাঠাও।\n\n"
+        "Example:\n"
+        "@MyChannel"
+    )
+
+
+# =========================
+# TASK LIST
+# =========================
+
+async def task_list(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    rows = get_channel_tasks()
+
+    if not rows:
+
+        text = (
+            "📋 ACTIVE TASKS\n\n"
+            "কোনো Task নেই।"
+        )
+
+    else:
+
+        text = (
+            "📋 ACTIVE TASKS\n\n"
+        )
+
+        for row in rows:
+
+            text += (
+                f"🆔 ID: {row['id']}\n"
+                f"📢 {row['channel']}\n"
+                f"📝 {row['title']}\n"
+                f"💰 Reward: "
+                f"{row['reward']} Points\n\n"
+            )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔙 Task Manager",
+                    callback_data="manage_tasks"
+                )
+            ]
+        ])
+    )
+
+
+# =========================
+# DELETE TASK MENU
+# =========================
+
+async def task_delete_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    rows = get_channel_tasks()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "🗑️ DELETE TASK\n\n"
+            "কোনো active task নেই।"
+        )
+
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"🗑️ #{row['id']} "
+                f"{row['title']}",
+                callback_data=(
+                    f"delete_task_{row['id']}"
+                )
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 Task Manager",
+            callback_data="manage_tasks"
+        )
+    ])
+
+    await query.edit_message_text(
+        "🗑️ DELETE TASK\n\n"
+        "যে Task delete করতে চাও "
+        "সেটি নির্বাচন করো:",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+
+# =========================
+# USER MANAGEMENT
+# =========================
+
+async def user_management(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    context.user_data[
+        "user_management"
+    ] = True
+
+    await query.edit_message_text(
+        "👤 USER MANAGEMENT\n\n"
+        "যে User-এর information দেখতে চাও,\n"
+        "তার Telegram User ID পাঠাও।\n\n"
+        "Example:\n"
+        "123456789"
+    )
+
+
+# =========================
+# SHOW USER INFORMATION
+# =========================
+
+async def show_user_information(
+    update,
+    context,
+    user_id
+):
+
+    info = get_user_info(
+        user_id
+    )
+
+    if not info:
+
+        await update.message.reply_text(
+            "❌ এই User ID-তে "
+            "কোনো user পাওয়া যায়নি।"
+        )
+
+        return
+
+    user = info["user"]
+
+    username = user["username"]
+
+    if username:
+
+        username_text = (
+            f"@{username}"
+        )
+
+    else:
+
+        username_text = (
+            "No Username"
+        )
+
+    text = (
+        "👤 USER INFORMATION\n\n"
+        f"🆔 User ID: "
+        f"{user['user_id']}\n"
+        f"👤 Username: "
+        f"{username_text}\n"
+        f"📝 Name: "
+        f"{user['first_name'] or 'Unknown'}\n"
+        f"💰 Points: "
+        f"{user['points']}\n"
+        f"👥 Referrals: "
+        f"{info['referrals']}\n"
+        f"✅ Completed Tasks: "
+        f"{info['tasks']}\n"
+        f"🎁 Last Bonus: "
+        f"{user['last_bonus'] or 'Not taken'}"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "➕ Add Points",
+                callback_data=(
+                    f"user_add_{user_id}"
+                )
+            ),
+            InlineKeyboardButton(
+                "➖ Remove Points",
+                callback_data=(
+                    f"user_remove_{user_id}"
+                )
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Admin Panel",
+                callback_data="admin_home"
+            )
+        ]
+    ])
+
+    await update.message.reply_text(
+        text,
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# USERS LIST
+# =========================
+
+async def users_list(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    conn = db()
+
+    rows = conn.execute("""
+    SELECT user_id, username,
+           first_name, points
+    FROM users
+    ORDER BY user_id DESC
+    LIMIT 30
+    """).fetchall()
+
+    conn.close()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "📋 USERS LIST\n\n"
+            "কোনো User নেই।"
+        )
+
+        return
+
+    text = (
+        "📋 USERS LIST\n\n"
+    )
+
+    for row in rows:
+
+        username = row["username"]
+
+        if username:
+
+            username = (
+                "@" + username
+            )
+
+        else:
+
+            username = "No Username"
+
+        text += (
+            f"🆔 {row['user_id']}\n"
+            f"👤 {username}\n"
+            f"📝 {row['first_name']}\n"
+            f"💰 {row['points']} Points\n"
+            "──────────────\n"
+        )
+
+    text += (
+        "\n⚠️ সর্বশেষ 30 জন User দেখানো হয়েছে।"
+    )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔙 Admin Panel",
+                    callback_data="admin_home"
+                )
+            ]
+        ])
+    )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized!",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+
+    # USER MANAGEMENT
+
+    if data == "user_management":
+
+        await user_management(
+            update,
+            context
+        )
+
+        return
+
+
+    # USERS LIST
+
+    if data == "users_list":
+
+        await users_list(
+            update,
+            context
+        )
+
+        return
+
+
+    # ADD POINTS
+
+    if data.startswith(
+        "user_add_"
+    ):
+
+        user_id = int(
+            data.replace(
+                "user_add_",
+                ""
+            )
+        )
+
+        context.user_data[
+            "points_action"
+        ] = "add"
+
+        context.user_data[
+            "points_user_id"
+        ] = user_id
+
+        await query.message.reply_text(
+            "➕ ADD POINTS\n\n"
+            "কত Points add করতে চাও?\n\n"
+            "Example: 100"
+        )
+
+        return
+
+
+    # REMOVE POINTS
+
+    if data.startswith(
+        "user_remove_"
+    ):
+
+        user_id = int(
+            data.replace(
+                "user_remove_",
+                ""
+            )
+        )
+
+        context.user_data[
+            "points_action"
+        ] = "remove"
+
+        context.user_data[
+            "points_user_id"
+        ] = user_id
+
+        await query.message.reply_text(
+            "➖ REMOVE POINTS\n\n"
+            "কত Points remove করতে চাও?\n\n"
+            "Example: 100"
+        )
+
+        return
+
+
+    # TASK MANAGER
+
+    if data == "manage_tasks":
+
+        await task_manager_menu(
+            update,
+            context
+        )
+
+        return
+
+
+    # ADD TASK
+
+    if data == "task_add":
+
+        await add_task_start(
+            update,
+            context
+        )
+
+        return
+
+
+    # TASK LIST
+
+    if data == "task_list":
+
+        await task_list(
+            update,
+            context
+        )
+
+        return
+
+
+    # DELETE TASK MENU
+
+    if data == "task_delete":
+
+        await task_delete_menu(
+            update,
+            context
+        )
+
+        return
+
+
+    # DELETE TASK
+
+    if data.startswith(
+        "delete_task_"
+    ):
+
+        task_id = int(
+            data.replace(
+                "delete_task_",
+                ""
+            )
+        )
+
+        delete_channel_task(
+            task_id
+        )
+
+        await query.edit_message_text(
+            "✅ Task Deleted Successfully!",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Task Manager",
+                        callback_data="manage_tasks"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # ADMIN HOME
+
+    if data == "admin_home":
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "📋 Manage Tasks",
+                    callback_data="manage_tasks"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👥 Total Users",
+                    callback_data="admin_users"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👤 User Management",
+                    callback_data="user_management"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📋 Users List",
+                    callback_data="users_list"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💳 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📊 Statistics",
+                    callback_data="admin_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📢 Broadcast",
+                    callback_data="admin_broadcast"
+                )
+            ]
+        ])
+
+        await query.edit_message_text(
+            "👑 ADMIN PANEL\n\n"
+            "TaskMint Control Center",
+            reply_markup=keyboard
+        )
+
+        return
