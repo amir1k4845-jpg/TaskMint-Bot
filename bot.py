@@ -2696,3 +2696,809 @@ async def process_broadcast(
     )
 
     return True
+# =========================
+# SHOW USER INFORMATION
+# =========================
+
+async def show_user_information(
+    update,
+    context,
+    user_id
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return
+
+    info = get_user_info(
+        user_id
+    )
+
+    if not info:
+
+        await update.message.reply_text(
+            "❌ এই User পাওয়া যায়নি।"
+        )
+
+        return
+
+    user = info["user"]
+
+    username = (
+        f"@{user['username']}"
+        if user["username"]
+        else "No username"
+    )
+
+    await update.message.reply_text(
+        "👤 USER INFORMATION\n\n"
+        f"🆔 User ID: {user['user_id']}\n"
+        f"👤 Username: {username}\n"
+        f"📛 Name: {user['first_name']}\n"
+        f"💰 Points: {user['points']}\n"
+        f"👥 Referrals: {info['referrals']}\n"
+        f"✅ Tasks Completed: {info['tasks']}\n"
+        f"🎁 Last Bonus: {user['last_bonus'] or 'Never'}"
+    )
+
+
+# =========================
+# ADMIN USER SEARCH
+# =========================
+
+async def admin_user_search(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    context.user_data[
+        "user_management"
+    ] = True
+
+    await query.message.reply_text(
+        "👤 USER SEARCH\n\n"
+        "যে User-এর তথ্য দেখতে চাও তার Telegram User ID পাঠাও।"
+    )
+
+
+# =========================
+# ADMIN ADD POINTS MENU
+# =========================
+
+async def admin_add_points_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    context.user_data[
+        "points_action"
+    ] = "add"
+
+    await query.message.reply_text(
+        "➕ ADD POINTS\n\n"
+        "প্রথমে User ID পাঠাও।"
+    )
+
+    context.user_data[
+        "points_waiting_user"
+    ] = True
+
+
+# =========================
+# ADMIN REMOVE POINTS MENU
+# =========================
+
+async def admin_remove_points_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    context.user_data[
+        "points_action"
+    ] = "remove"
+
+    await query.message.reply_text(
+        "➖ REMOVE POINTS\n\n"
+        "প্রথমে User ID পাঠাও।"
+    )
+
+    context.user_data[
+        "points_waiting_user"
+    ] = True
+
+
+# =========================
+# POINTS USER ID PROCESS
+# =========================
+
+async def process_points_user(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return False
+
+    if not context.user_data.get(
+        "points_waiting_user"
+    ):
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        target_user = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Valid User ID পাঠাও।"
+        )
+
+        return True
+
+    info = get_user_info(
+        target_user
+    )
+
+    if not info:
+
+        await update.message.reply_text(
+            "❌ এই User পাওয়া যায়নি।"
+        )
+
+        context.user_data.pop(
+            "points_waiting_user",
+            None
+        )
+
+        context.user_data.pop(
+            "points_action",
+            None
+        )
+
+        return True
+
+    context.user_data[
+        "points_user_id"
+    ] = target_user
+
+    context.user_data.pop(
+        "points_waiting_user",
+        None
+    )
+
+    await update.message.reply_text(
+        "💰 এখন কত Points দিতে/কাটতে চাও?\n\n"
+        "Example: 100"
+    )
+
+    return True
+
+
+# =========================
+# CANCEL ALL ADMIN ACTION
+# =========================
+
+async def admin_cancel(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ Admin action cancelled।",
+        reply_markup=MARKUP
+    )
+
+
+# =========================
+# WITHDRAWAL LIST
+# =========================
+
+async def withdrawal_list(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE status='pending'
+        ORDER BY id ASC
+        LIMIT 30
+        """
+    ).fetchall()
+
+    conn.close()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "💳 PENDING WITHDRAWALS\n\n"
+            "✅ কোনো pending withdrawal নেই।"
+        )
+
+        return
+
+    buttons = []
+
+    text = (
+        "💳 PENDING WITHDRAWALS\n\n"
+        "নিচের request নির্বাচন করো:\n"
+    )
+
+    for row in rows:
+
+        text += (
+            f"\n#{row['id']} — "
+            f"{row['amount']} Points"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"💳 #{row['id']} "
+                f"({row['amount']} Points)",
+                callback_data=(
+                    f"withdraw_{row['id']}"
+                )
+            )
+        ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+
+# =========================
+# WITHDRAWAL CALLBACK
+# =========================
+
+async def withdrawal_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+
+        return
+
+    data = query.data
+
+    if data.startswith(
+        "withdraw_"
+    ):
+
+        await query.answer()
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            return
+
+        conn = db()
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+            """,
+            (withdrawal_id,)
+        ).fetchone()
+
+        conn.close()
+
+        if not row:
+
+            await query.edit_message_text(
+                "❌ Withdrawal request পাওয়া যায়নি।"
+            )
+
+            return
+
+        username = (
+            f"@{row['username']}"
+            if row["username"]
+            else "No username"
+        )
+
+        buttons = []
+
+        if row["status"] == "pending":
+
+            buttons.append([
+                InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=(
+                        f"approve_{withdrawal_id}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject",
+                    callback_data=(
+                        f"reject_{withdrawal_id}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_withdrawals"
+            )
+        ])
+
+        await query.edit_message_text(
+            "💳 WITHDRAWAL DETAILS\n\n"
+            f"🆔 Request ID: #{row['id']}\n"
+            f"👤 User ID: {row['user_id']}\n"
+            f"👤 Username: {username}\n"
+            f"💰 Amount: {row['amount']} Points\n"
+            f"💳 Method: {row['method']}\n"
+            f"📱 Account: {row['account']}\n"
+            f"📌 Status: {row['status']}",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+    if data.startswith(
+        "approve_"
+    ):
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await query.answer(
+                "Invalid request",
+                show_alert=True
+            )
+
+            return
+
+        await approve_withdrawal(
+            update,
+            context,
+            withdrawal_id
+        )
+
+        return
+
+    if data.startswith(
+        "reject_"
+    ):
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await query.answer(
+                "Invalid request",
+                show_alert=True
+            )
+
+            return
+
+        await reject_withdrawal(
+            update,
+            context,
+            withdrawal_id
+        )
+
+        return
+
+
+# =========================
+# ADMIN CALLBACK ROUTER
+# =========================
+
+async def callback_handler(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    data = query.data
+
+    if data.startswith(
+        "check_task_"
+    ):
+
+        await task_callback(
+            update,
+            context
+        )
+
+        return
+
+    if (
+        data.startswith("withdraw_")
+        or data.startswith("approve_")
+        or data.startswith("reject_")
+    ):
+
+        await withdrawal_callback(
+            update,
+            context
+        )
+
+        return
+
+    if data.startswith(
+        "delete_task_"
+    ):
+
+        await admin_callback(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_users":
+
+        await admin_user_search(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_add_points":
+
+        await admin_add_points_menu(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_remove_points":
+
+        await admin_remove_points_menu(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_withdrawals":
+
+        await withdrawal_list(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_broadcast":
+
+        await broadcast_start(
+            update,
+            context
+        )
+
+        return
+
+    await admin_callback(
+        update,
+        context
+    )
+
+
+# =========================
+# MAIN TEXT ROUTER
+# =========================
+
+async def main_text_router(
+    update,
+    context
+):
+
+    if await process_broadcast(
+        update,
+        context
+    ):
+
+        return
+
+    if await process_points_user(
+        update,
+        context
+    ):
+
+        return
+
+    if await admin_points_action(
+        update,
+        context
+    ):
+
+        return
+
+    if await process_task_add(
+        update,
+        context
+    ):
+
+        return
+
+    if await process_user_management(
+        update,
+        context
+    ):
+
+        return
+
+    await all_text(
+        update,
+        context
+    )
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        context.error
+    )
+
+
+# =========================
+# STARTUP
+# =========================
+
+def main():
+
+    if not TOKEN:
+
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
+
+    init_db()
+
+    create_default_task()
+
+    thread = threading.Thread(
+        target=web_server,
+        daemon=True
+    )
+
+    thread.start()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # =====================
+    # WITHDRAW CONVERSATION
+    # =====================
+
+    withdraw_conversation = (
+        ConversationHandler(
+            entry_points=[
+                MessageHandler(
+                    filters.Regex(
+                        "^💳 Withdraw$"
+                    ),
+                    withdraw_start
+                )
+            ],
+            states={
+                AMOUNT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_amount
+                    )
+                ],
+                METHOD: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_method
+                    )
+                ],
+                ACCOUNT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_account
+                    )
+                ]
+            },
+            fallbacks=[
+                CommandHandler(
+                    "cancel",
+                    withdraw_cancel
+                )
+            ],
+            allow_reentry=True
+        )
+    )
+
+    # =====================
+    # COMMANDS
+    # =====================
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_cmd
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_panel
+        )
+    )
+
+    # =====================
+    # WITHDRAW
+    # =====================
+
+    app.add_handler(
+        withdraw_conversation
+    )
+
+    # =====================
+    # CALLBACKS
+    # =====================
+
+    app.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+    # =====================
+    # TEXT
+    # =====================
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            main_text_router
+        )
+    )
+
+    # =====================
+    # ERRORS
+    # =====================
+
+    app.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "🚀 TaskMint Bot is starting..."
+    )
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# =========================
+# RUN
+# =========================
+
+if __name__ == "__main__":
+
+    main()
