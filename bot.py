@@ -1289,3 +1289,177 @@ async def task_delete_menu(update, context):
             buttons
         )
     )
+# =========================
+# USER MANAGEMENT MENU
+# =========================
+
+async def user_management(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    context.user_data["user_management"] = True
+
+    await query.edit_message_text(
+        "👤 USER MANAGEMENT\n\n"
+        "যে User-এর information দেখতে চাও,\n"
+        "তার Telegram User ID পাঠাও।\n\n"
+        "Example:\n"
+        "123456789"
+    )
+
+
+# =========================
+# SHOW USER INFORMATION
+# =========================
+
+async def show_user_information(
+    update,
+    context,
+    user_id
+):
+
+    info = get_user_info(user_id)
+
+    if not info:
+
+        await update.message.reply_text(
+            "❌ এই User ID-তে কোনো user পাওয়া যায়নি।"
+        )
+
+        return
+
+    user = info["user"]
+
+    username = user["username"]
+
+    if username:
+        username_text = f"@{username}"
+    else:
+        username_text = "No Username"
+
+    text = (
+        "👤 USER INFORMATION\n\n"
+        f"🆔 User ID: {user['user_id']}\n"
+        f"👤 Username: {username_text}\n"
+        f"📝 Name: {user['first_name'] or 'Unknown'}\n"
+        f"💰 Points: {user['points']}\n"
+        f"👥 Referrals: {info['referrals']}\n"
+        f"✅ Completed Tasks: {info['tasks']}\n"
+        f"🎁 Last Bonus: "
+        f"{user['last_bonus'] or 'Not taken'}"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "➕ Add Points",
+                callback_data=f"user_add_{user_id}"
+            ),
+            InlineKeyboardButton(
+                "➖ Remove Points",
+                callback_data=f"user_remove_{user_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Admin Panel",
+                callback_data="admin_home"
+            )
+        ]
+    ])
+
+    await update.message.reply_text(
+        text,
+        reply_markup=keyboard
+    )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(update, context):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized!",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    # USER MANAGEMENT
+
+    if data == "user_management":
+
+        await user_management(
+            update,
+            context
+        )
+
+        return
+
+    # ADD POINTS
+
+    if data.startswith("user_add_"):
+
+        user_id = int(
+            data.replace(
+                "user_add_",
+                ""
+            )
+        )
+
+        context.user_data[
+            "points_action"
+        ] = "add"
+
+        context.user_data[
+            "points_user_id"
+        ] = user_id
+
+        await query.message.reply_text(
+            "➕ ADD POINTS\n\n"
+            "কত Points add করতে চাও?\n\n"
+            "Example: 100"
+        )
+
+        return
+
+    # REMOVE POINTS
+
+    if data.startswith("user_remove_"):
+
+        user_id = int(
+            data.replace(
+                "user_remove_",
+                ""
+            )
+        )
+
+        context.user_data[
+            "points_action"
+        ] = "remove"
+
+        context.user_data[
+            "points_user_id"
+        ] = user_id
+
+        await query.message.reply_text(
+            "➖ REMOVE POINTS\n\n"
+            "কত Points remove করতে চাও?\n\n"
+            "Example: 100"
+        )
+
+        return
