@@ -929,3 +929,365 @@ async def admin_callback(
                 "User notification error:",
                 e
         )
+# =========================
+# TASK CALLBACK
+# =========================
+
+async def task_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if query.data != "check_join":
+        return
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=CHANNEL_USERNAME,
+            user_id=user_id
+        )
+
+        if member.status in [
+            "member",
+            "administrator",
+            "creator"
+        ]:
+
+            if task_completed(user_id, "join_task"):
+
+                await query.edit_message_text(
+                    "⚠️ এই Task তুমি আগেই complete করেছো!\n\n"
+                    f"💰 Current Points: {get_points(user_id)}"
+                )
+                return
+
+            add_points(user_id, TASK_REWARD)
+
+            mark_task_completed(
+                user_id,
+                "join_task"
+            )
+
+            await query.edit_message_text(
+                "🎉 Task Completed!\n\n"
+                f"✅ +{TASK_REWARD} Points Added!\n\n"
+                f"💰 Total Points: {get_points(user_id)}"
+            )
+
+        else:
+
+            await query.edit_message_text(
+                "❌ তুমি এখনো Channel-এ Join করোনি!\n\n"
+                "প্রথমে Join করো।",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "📢 Join Channel",
+                            url=CHANNEL_URL
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🔄 Check Again",
+                            callback_data="check_join"
+                        )
+                    ]
+                ])
+            )
+
+    except Exception as e:
+
+        print(
+            "Channel check error:",
+            e
+        )
+
+        await query.edit_message_text(
+            "⚠️ Channel verification করা যাচ্ছে না।\n\n"
+            "নিশ্চিত করো Bot-কে Channel-এর Admin করা হয়েছে।"
+        )
+
+
+# =========================
+# BROADCAST
+# =========================
+
+async def broadcast_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.user_data.get(
+        "broadcast_mode"
+    ):
+        return
+
+    message = update.message
+
+    context.user_data[
+        "broadcast_mode"
+    ] = False
+
+    conn = get_db()
+
+    rows = conn.execute(
+        "SELECT user_id FROM users"
+    ).fetchall()
+
+    conn.close()
+
+    sent = 0
+    failed = 0
+
+    for row in rows:
+
+        try:
+
+            await context.bot.copy_message(
+                chat_id=row["user_id"],
+                from_chat_id=update.effective_chat.id,
+                message_id=message.message_id
+            )
+
+            sent += 1
+
+        except Exception:
+
+            failed += 1
+
+    await update.message.reply_text(
+        "📢 Broadcast Finished!\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+
+# =========================
+# NORMAL BUTTONS
+# =========================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    text = update.message.text
+
+    if text == "👑 Admin Panel":
+
+        await admin_panel(
+            update,
+            context
+        )
+
+        return
+
+    if text == "💰 Earn Tasks":
+
+        await earn_tasks(
+            update,
+            context
+        )
+
+    elif text == "👥 Refer & Earn":
+
+        user_id = update.effective_user.id
+
+        await update.message.reply_text(
+            "👥 Refer & Earn\n\n"
+            "🔗 Your Referral Link:\n"
+            f"https://t.me/TaskMintBot?start={user_id}\n\n"
+            "Referral system পরে fully activate করা হবে।"
+        )
+
+    elif text == "🎁 Daily Bonus":
+
+        await update.message.reply_text(
+            "🎁 Daily Bonus\n\n"
+            "Daily Bonus system পরে activate করা হবে।"
+        )
+
+    elif text == "📊 My Balance":
+
+        points = get_points(
+            update.effective_user.id
+        )
+
+        await update.message.reply_text(
+            "📊 My Balance\n\n"
+            f"💰 Points: {points}\n"
+            "💵 Balance: $0.00"
+        )
+
+    elif text == "ℹ️ Help":
+
+        await help_command(
+            update,
+            context
+        )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not TOKEN:
+
+        raise ValueError(
+            "BOT_TOKEN is not set."
+        )
+
+    init_db()
+
+    threading.Thread(
+        target=start_web_server,
+        daemon=True
+    ).start()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # Commands
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_panel
+        )
+    )
+
+    # Withdraw
+
+    withdraw_conversation = ConversationHandler(
+
+        entry_points=[
+
+            MessageHandler(
+                filters.Regex(
+                    "^💳 Withdraw$"
+                ),
+                withdraw_start
+            )
+
+        ],
+
+        states={
+
+            AMOUNT: [
+
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_amount
+                )
+
+            ],
+
+            METHOD: [
+
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_method
+                )
+
+            ],
+
+            ACCOUNT: [
+
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_account
+                )
+
+            ],
+
+        },
+
+        fallbacks=[]
+    )
+
+    app.add_handler(
+        withdraw_conversation
+    )
+
+    # Admin buttons
+
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_callback,
+            pattern=r"^(admin_|approve_|reject_)"
+        )
+    )
+
+    # Task button
+
+    app.add_handler(
+        CallbackQueryHandler(
+            task_callback,
+            pattern="^check_join$"
+        )
+    )
+
+    # Broadcast
+
+    app.add_handler(
+        MessageHandler(
+            filters.ALL,
+            broadcast_handler
+        )
+    )
+
+    # Normal buttons
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            button_handler
+        )
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+
+    main()
