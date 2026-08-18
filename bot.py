@@ -24,7 +24,7 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = 7003609983
 
 DB_FILE = "taskmint.db"
 
