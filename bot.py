@@ -20,6 +20,9 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
+CHANNEL_USERNAME = "@Amir10m300"
+TASK_REWARD = 10
+
 
 # =========================
 # Render Health Server
@@ -107,23 +110,25 @@ async def earn_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton(
-                "📢 Join Telegram Channel (+10 Points)",
-                callback_data="task_join"
+                "📢 Join Channel",
+                url="https://t.me/Amir10m300"
             )
         ],
         [
             InlineKeyboardButton(
-                "🔙 Back to Menu",
-                callback_data="back_menu"
+                "✅ Check Task",
+                callback_data="check_join"
             )
         ]
     ]
 
     await update.message.reply_text(
         "💰 Earn Tasks\n\n"
-        "নিচের Task complete করে Points earn করো 👇\n\n"
-        "📢 Join Telegram Channel\n"
-        "💰 Reward: 10 Points",
+        "📢 Join our Telegram Channel\n\n"
+        f"💰 Reward: +{TASK_REWARD} Points\n\n"
+        "1️⃣ Join Channel button চাপো\n"
+        "2️⃣ Channel-এ Join করো\n"
+        "3️⃣ তারপর ✅ Check Task চাপো",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -143,63 +148,91 @@ async def task_callback(
 
     user_id = query.from_user.id
 
-    # Join task
-    if query.data == "task_join":
+    # =====================
+    # Check Channel Join
+    # =====================
 
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "📢 Join Channel",
-                    url="https://t.me/TaskMintBot"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Check Task",
-                    callback_data="check_join"
-                )
-            ]
-        ]
+    if query.data == "check_join":
 
-        await query.edit_message_text(
-            "📢 Join Telegram Channel\n\n"
-            "1️⃣ নিচের Join Channel button-এ চাপ দাও।\n"
-            "2️⃣ Channel-এ Join করো।\n"
-            "3️⃣ তারপর নিচের ✅ Check Task button চাপো।\n\n"
-            "💰 Reward: 10 Points",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
 
-    # Check task
-    elif query.data == "check_join":
-
-        # Already completed
-        completed_tasks = context.user_data.setdefault(
-            "completed_tasks",
-            set()
-        )
-
-        if "join_task" in completed_tasks:
-
-            await query.edit_message_text(
-                "⚠️ তুমি এই Task আগেই complete করেছো!\n\n"
-                "এই Task থেকে আর Points পাওয়া যাবে না।"
+            member = await context.bot.get_chat_member(
+                chat_id=CHANNEL_USERNAME,
+                user_id=user_id
             )
 
-            return
+            status = member.status
 
-        # Give reward
-        user_points[user_id] = user_points.get(user_id, 0) + 10
+            # User joined
+            if status in ["member", "administrator", "creator"]:
 
-        completed_tasks.add("join_task")
+                completed_tasks = context.user_data.setdefault(
+                    "completed_tasks",
+                    set()
+                )
 
-        await query.edit_message_text(
-            "🎉 Task Completed!\n\n"
-            "✅ তুমি পেয়েছো +10 Points\n\n"
-            f"💰 Total Points: {user_points[user_id]}"
-        )
+                # Already rewarded
+                if "join_task" in completed_tasks:
 
+                    await query.edit_message_text(
+                        "⚠️ এই Task তুমি আগেই complete করেছো!\n\n"
+                        f"💰 Current Points: "
+                        f"{user_points.get(user_id, 0)}"
+                    )
+
+                    return
+
+                # Give points
+                user_points[user_id] = (
+                    user_points.get(user_id, 0)
+                    + TASK_REWARD
+                )
+
+                completed_tasks.add("join_task")
+
+                await query.edit_message_text(
+                    "🎉 Task Completed!\n\n"
+                    f"✅ +{TASK_REWARD} Points Added!\n\n"
+                    f"💰 Total Points: "
+                    f"{user_points[user_id]}"
+                )
+
+            else:
+
+                await query.edit_message_text(
+                    "❌ তুমি এখনো Channel-এ Join করোনি!\n\n"
+                    "প্রথমে Channel-এ Join করো।\n"
+                    "তারপর আবার ✅ Check Task চাপো।",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "📢 Join Channel",
+                                url="https://t.me/Amir10m300"
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                "🔄 Check Again",
+                                callback_data="check_join"
+                            )
+                        ]
+                    ])
+                )
+
+        except Exception as e:
+
+            print("Channel check error:", e)
+
+            await query.edit_message_text(
+                "⚠️ Channel verification করা যাচ্ছে না।\n\n"
+                "দয়া করে নিশ্চিত করো যে TaskMint Bot-কে "
+                "Channel-এর Admin করা হয়েছে।"
+            )
+
+    # =====================
     # Back
+    # =====================
+
     elif query.data == "back_menu":
 
         await query.message.delete()
@@ -230,7 +263,7 @@ async def button_handler(
 
         await earn_tasks(update, context)
 
-    # Refer
+    # Referral
     elif text == "👥 Refer & Earn":
 
         user_id = update.effective_user.id
@@ -326,10 +359,6 @@ def main():
 
     app.run_polling()
 
-
-# =========================
-# Run
-# =========================
 
 if __name__ == "__main__":
     main()
