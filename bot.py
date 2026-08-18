@@ -316,3 +316,616 @@ async def earn_tasks(
             keyboard
         )
     )
+# =========================
+# WITHDRAW
+# =========================
+
+async def withdraw_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+    points = get_points(user_id)
+
+    if points < MIN_WITHDRAW:
+
+        await update.message.reply_text(
+            "💳 Withdraw\n\n"
+            f"💰 Your Points: {points}\n"
+            f"⚠️ Minimum Withdrawal: {MIN_WITHDRAW} Points\n\n"
+            "আরও Points earn করো।"
+        )
+
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "💳 Withdrawal\n\n"
+        f"💰 Available Points: {points}\n"
+        f"⚠️ Minimum: {MIN_WITHDRAW} Points\n\n"
+        "কত Points withdraw করতে চাও?\n"
+        "শুধু সংখ্যা লিখো।"
+    )
+
+    return AMOUNT
+
+
+async def withdraw_amount(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+    points = get_points(user_id)
+
+    try:
+        amount = int(update.message.text.strip())
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ শুধু সংখ্যা লিখো।\n\n"
+            "উদাহরণ: 100"
+        )
+
+        return AMOUNT
+
+    if amount < MIN_WITHDRAW:
+
+        await update.message.reply_text(
+            f"❌ Minimum Withdrawal "
+            f"{MIN_WITHDRAW} Points।"
+        )
+
+        return AMOUNT
+
+    if amount > points:
+
+        await update.message.reply_text(
+            "❌ তোমার কাছে এত Points নেই!\n\n"
+            f"💰 Available: {points}"
+        )
+
+        return AMOUNT
+
+    context.user_data["withdraw_amount"] = amount
+
+    keyboard = [
+        ["💰 Binance"],
+        ["📱 bKash"],
+        ["📱 Nagad"],
+    ]
+
+    await update.message.reply_text(
+        "💳 Payment Method নির্বাচন করো:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    )
+
+    return METHOD
+
+
+async def withdraw_method(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    method = update.message.text.strip()
+
+    allowed = [
+        "💰 Binance",
+        "📱 bKash",
+        "📱 Nagad",
+    ]
+
+    if method not in allowed:
+
+        await update.message.reply_text(
+            "❌ একটি valid payment method "
+            "নির্বাচন করো।"
+        )
+
+        return METHOD
+
+    context.user_data["withdraw_method"] = method
+
+    await update.message.reply_text(
+        "📱 এখন তোমার payment "
+        "account number / ID পাঠাও।"
+    )
+
+    return ACCOUNT
+
+
+async def withdraw_account(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    account = update.message.text.strip()
+
+    if len(account) < 4:
+
+        await update.message.reply_text(
+            "❌ সঠিক account number / ID দাও।"
+        )
+
+        return ACCOUNT
+
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "No Username"
+
+    amount = context.user_data["withdraw_amount"]
+    method = context.user_data["withdraw_method"]
+
+    points = get_points(user_id)
+
+    if amount > points:
+
+        await update.message.reply_text(
+            "❌ Balance পরিবর্তিত হয়েছে। "
+            "আবার চেষ্টা করো।",
+            reply_markup=reply_markup
+        )
+
+        context.user_data.clear()
+
+        return ConversationHandler.END
+
+    remove_points(user_id, amount)
+
+    conn = get_db()
+
+    cur = conn.execute("""
+        INSERT INTO withdrawals
+        (user_id, username, amount, method, account, status)
+        VALUES (?, ?, ?, ?, ?, 'pending')
+    """, (
+        user_id,
+        username,
+        amount,
+        method,
+        account
+    ))
+
+    withdrawal_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    admin_text = (
+        "🔔 NEW WITHDRAWAL\n\n"
+        f"🆔 Request ID: #{withdrawal_id}\n"
+        f"👤 User ID: {user_id}\n"
+        f"👤 Username: @{username}\n"
+        f"💰 Amount: {amount} Points\n"
+        f"💳 Method: {method}\n"
+        f"📱 Account: {account}\n"
+        f"💰 Remaining: {get_points(user_id)} Points"
+    )
+
+    admin_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Approve",
+                callback_data=f"approve_{withdrawal_id}"
+            ),
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=f"reject_{withdrawal_id}"
+            )
+        ]
+    ])
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=admin_text,
+            reply_markup=admin_keyboard
+        )
+
+    except Exception as e:
+
+        print(
+            "Admin notification error:",
+            e
+        )
+
+    await update.message.reply_text(
+        "✅ Withdrawal Request Submitted!\n\n"
+        f"💰 Amount: {amount} Points\n"
+        f"💳 Method: {method}\n"
+        f"📱 Account: {account}\n\n"
+        "⏳ Admin verification-এর জন্য অপেক্ষা করো।",
+        reply_markup=reply_markup
+    )
+
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ Unauthorized."
+        )
+
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "👥 Total Users",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💰 Pending Withdrawals",
+                callback_data="admin_withdrawals"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            )
+        ],
+    ]
+
+    await update.message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        "শুধু Admin-এর জন্য।",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized!",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    if data == "admin_users":
+
+        conn = get_db()
+
+        row = conn.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()
+
+        conn.close()
+
+        await query.edit_message_text(
+            f"👥 Total Users: {row['total']}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+    elif data == "admin_stats":
+
+        conn = get_db()
+
+        users = conn.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()["total"]
+
+        points = conn.execute(
+            "SELECT COALESCE(SUM(points), 0) AS total "
+            "FROM users"
+        ).fetchone()["total"]
+
+        pending = conn.execute("""
+            SELECT COUNT(*) AS total
+            FROM withdrawals
+            WHERE status = 'pending'
+        """).fetchone()["total"]
+
+        conn.close()
+
+        await query.edit_message_text(
+            "📊 BOT STATISTICS\n\n"
+            f"👥 Users: {users}\n"
+            f"💰 Total Points: {points}\n"
+            f"💳 Pending Withdrawals: {pending}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+    elif data == "admin_withdrawals":
+
+        conn = get_db()
+
+        rows = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE status = 'pending'
+            ORDER BY id DESC
+            LIMIT 10
+        """).fetchall()
+
+        conn.close()
+
+        if not rows:
+
+            text = (
+                "💳 Pending Withdrawals\n\n"
+                "No pending withdrawals."
+            )
+
+        else:
+
+            text = "💳 PENDING WITHDRAWALS\n\n"
+
+            for row in rows:
+
+                text += (
+                    f"#{row['id']} — "
+                    f"{row['amount']} Points — "
+                    f"{row['method']}\n"
+                )
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+    elif data == "admin_broadcast":
+
+        context.user_data["broadcast_mode"] = True
+
+        await query.edit_message_text(
+            "📢 BROADCAST\n\n"
+            "এখন যে message সবাইকে পাঠাতে চাও "
+            "সেটা পাঠাও।"
+        )
+
+    elif data == "admin_home":
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "👥 Total Users",
+                    callback_data="admin_users"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💰 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📊 Statistics",
+                    callback_data="admin_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📢 Broadcast",
+                    callback_data="admin_broadcast"
+                )
+            ],
+        ]
+
+        await query.edit_message_text(
+            "👑 ADMIN PANEL\n\n"
+            "Admin control center",
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+
+    elif data.startswith("approve_"):
+
+        withdrawal_id = int(
+            data.split("_")[1]
+        )
+
+        conn = get_db()
+
+        row = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE id = ?
+        """, (
+            withdrawal_id,
+        )).fetchone()
+
+        if not row:
+
+            conn.close()
+
+            await query.edit_message_text(
+                "❌ Withdrawal not found."
+            )
+
+            return
+
+        if row["status"] != "pending":
+
+            conn.close()
+
+            await query.answer(
+                "Already processed.",
+                show_alert=True
+            )
+
+            return
+
+        conn.execute("""
+            UPDATE withdrawals
+            SET status = 'approved'
+            WHERE id = ?
+        """, (
+            withdrawal_id,
+        ))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            query.message.text
+            + "\n\n"
+            "✅ STATUS: APPROVED"
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "✅ Withdrawal Approved!\n\n"
+                    f"💰 Amount: {row['amount']} Points\n"
+                    f"💳 Method: {row['method']}\n\n"
+                    "Admin তোমার request approve করেছে।"
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                "User notification error:",
+                e
+            )
+
+    elif data.startswith("reject_"):
+
+        withdrawal_id = int(
+            data.split("_")[1]
+        )
+
+        conn = get_db()
+
+        row = conn.execute("""
+            SELECT *
+            FROM withdrawals
+            WHERE id = ?
+        """, (
+            withdrawal_id,
+        )).fetchone()
+
+        if not row:
+
+            conn.close()
+
+            await query.edit_message_text(
+                "❌ Withdrawal not found."
+            )
+
+            return
+
+        if row["status"] != "pending":
+
+            conn.close()
+
+            await query.answer(
+                "Already processed.",
+                show_alert=True
+            )
+
+            return
+
+        conn.execute("""
+            UPDATE withdrawals
+            SET status = 'rejected'
+            WHERE id = ?
+        """, (
+            withdrawal_id,
+        ))
+
+        conn.execute("""
+            UPDATE users
+            SET points = points + ?
+            WHERE user_id = ?
+        """, (
+            row["amount"],
+            row["user_id"],
+        ))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            query.message.text
+            + "\n\n"
+            "❌ STATUS: REJECTED\n"
+            f"↩️ {row['amount']} Points returned."
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "❌ Withdrawal Rejected\n\n"
+                    f"↩️ {row['amount']} Points "
+                    "তোমার balance-এ ফেরত দেওয়া হয়েছে।"
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                "User notification error:",
+                e
+        )
