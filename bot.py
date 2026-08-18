@@ -1007,3 +1007,225 @@ async def admin_callback(update, context):
 
         except Exception:
             pass
+# =========================
+# BROADCAST HANDLER
+# =========================
+
+async def broadcast_handler(update, context):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.user_data.get("broadcast"):
+        return
+
+    context.user_data["broadcast"] = False
+
+    conn = db()
+
+    users = conn.execute(
+        "SELECT user_id FROM users"
+    ).fetchall()
+
+    conn.close()
+
+    sent = 0
+    failed = 0
+
+    for user in users:
+
+        try:
+
+            await context.bot.copy_message(
+                chat_id=user["user_id"],
+                from_chat_id=update.effective_chat.id,
+                message_id=update.message.message_id
+            )
+
+            sent += 1
+
+        except Exception:
+
+            failed += 1
+
+    await update.message.reply_text(
+        "📢 Broadcast Finished!\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+
+# =========================
+# NORMAL BUTTON HANDLER
+# =========================
+
+async def button_handler(update, context):
+
+    if not update.message:
+        return
+
+    text = update.message.text
+
+    if text == "💰 Earn Tasks":
+
+        await earn_tasks(update, context)
+
+    elif text == "👥 Refer & Earn":
+
+        await referral(update, context)
+
+    elif text == "🎁 Daily Bonus":
+
+        await daily_bonus(update, context)
+
+    elif text == "📊 My Balance":
+
+        uid = update.effective_user.id
+
+        await update.message.reply_text(
+            "📊 My Balance\n\n"
+            f"💰 Points: {points(uid)}"
+        )
+
+    elif text == "ℹ️ Help":
+
+        await help_cmd(update, context)
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not TOKEN:
+        raise ValueError(
+            "BOT_TOKEN is not set"
+        )
+
+    init_db()
+
+    threading.Thread(
+        target=web_server,
+        daemon=True
+    ).start()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_cmd
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_panel
+        )
+    )
+
+    # Withdraw Conversation
+    withdraw_conversation = ConversationHandler(
+
+        entry_points=[
+            MessageHandler(
+                filters.Regex(
+                    "^💳 Withdraw$"
+                ),
+                withdraw_start
+            )
+        ],
+
+        states={
+
+            AMOUNT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_amount
+                )
+            ],
+
+            METHOD: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_method
+                )
+            ],
+
+            ACCOUNT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    withdraw_account
+                )
+            ],
+        },
+
+        fallbacks=[]
+    )
+
+    app.add_handler(
+        withdraw_conversation
+    )
+
+    # Task Check
+    app.add_handler(
+        CallbackQueryHandler(
+            task_callback,
+            pattern="^check_join$"
+        )
+    )
+
+    # Admin callbacks
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_callback,
+            pattern=r"^(admin_|approve_|reject_)"
+        )
+    )
+
+    # Broadcast handler
+    # Only admin broadcast messages are handled here.
+    app.add_handler(
+        MessageHandler(
+            filters.ALL,
+            broadcast_handler
+        ),
+        group=1
+    )
+
+    # Normal buttons
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            button_handler
+        ),
+        group=2
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    app.run_polling()
+
+
+# =========================
+# START BOT
+# =========================
+
+if __name__ == "__main__":
+    main()
