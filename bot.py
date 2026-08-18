@@ -1463,3 +1463,262 @@ async def admin_callback(update, context):
         )
 
         return
+# =========================
+# ADMIN CALLBACK - PART B
+# =========================
+
+    # TASK MANAGER
+
+    if data == "manage_tasks":
+
+        await task_manager_menu(
+            update,
+            context
+        )
+
+        return
+
+    if data == "task_add":
+
+        await add_task_start(
+            update,
+            context
+        )
+
+        return
+
+    if data == "task_list":
+
+        await task_list(
+            update,
+            context
+        )
+
+        return
+
+    if data == "task_delete":
+
+        await task_delete_menu(
+            update,
+            context
+        )
+
+        return
+
+
+    # DELETE TASK
+
+    if data.startswith("delete_task_"):
+
+        task_id = int(
+            data.replace(
+                "delete_task_",
+                ""
+            )
+        )
+
+        delete_channel_task(
+            task_id
+        )
+
+        await query.edit_message_text(
+            "✅ Task Deleted Successfully!",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Task Manager",
+                        callback_data="manage_tasks"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # ADMIN HOME
+
+    if data == "admin_home":
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "📋 Manage Tasks",
+                    callback_data="manage_tasks"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👥 Total Users",
+                    callback_data="admin_users"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "👤 User Management",
+                    callback_data="user_management"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💳 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📊 Statistics",
+                    callback_data="admin_stats"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📢 Broadcast",
+                    callback_data="admin_broadcast"
+                )
+            ]
+        ])
+
+        await query.edit_message_text(
+            "👑 ADMIN PANEL\n\n"
+            "TaskMint Control Center",
+            reply_markup=keyboard
+        )
+
+        return
+
+
+    # TOTAL USERS
+
+    if data == "admin_users":
+
+        conn = db()
+
+        total = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        conn.close()
+
+        await query.edit_message_text(
+            f"👥 Total Users: {total}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # STATISTICS
+
+    if data == "admin_stats":
+
+        conn = db()
+
+        users = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        total_points = conn.execute(
+            "SELECT COALESCE(SUM(points),0) FROM users"
+        ).fetchone()[0]
+
+        pending = conn.execute("""
+        SELECT COUNT(*)
+        FROM withdrawals
+        WHERE status='pending'
+        """).fetchone()[0]
+
+        conn.close()
+
+        await query.edit_message_text(
+            "📊 BOT STATISTICS\n\n"
+            f"👥 Users: {users}\n"
+            f"💰 Total Points: {total_points}\n"
+            f"💳 Pending Withdrawals: {pending}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # PENDING WITHDRAWALS
+
+    if data == "admin_withdrawals":
+
+        conn = db()
+
+        rows = conn.execute("""
+        SELECT *
+        FROM withdrawals
+        WHERE status='pending'
+        ORDER BY id DESC
+        LIMIT 10
+        """).fetchall()
+
+        conn.close()
+
+        if not rows:
+
+            text = (
+                "💳 Pending Withdrawals\n\n"
+                "No pending withdrawals."
+            )
+
+        else:
+
+            text = (
+                "💳 PENDING WITHDRAWALS\n\n"
+            )
+
+            for row in rows:
+
+                text += (
+                    f"#{row['id']} - "
+                    f"{row['amount']} Points - "
+                    f"{row['method']}\n"
+                )
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # BROADCAST
+
+    if data == "admin_broadcast":
+
+        context.user_data[
+            "broadcast"
+        ] = True
+
+        await query.edit_message_text(
+            "📢 BROADCAST\n\n"
+            "এখন যে message সবাইকে পাঠাতে চাও "
+            "সেটা পাঠাও।"
+        )
+
+        return
