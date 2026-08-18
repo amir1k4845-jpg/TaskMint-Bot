@@ -2003,3 +2003,696 @@ async def all_text(
         "নিচের Menu ব্যবহার করো।",
         reply_markup=MARKUP
     )
+    if not row:
+
+        await query.edit_message_text(
+            "❌ Withdrawal request পাওয়া যায়নি।"
+        )
+
+        return
+
+    text = (
+        "💳 WITHDRAWAL DETAILS\n\n"
+        f"🆔 Request: #{row['id']}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"👤 Username: @{row['username']}\n"
+        f"💰 Amount: {row['amount']} Points\n"
+        f"💳 Method: {row['method']}\n"
+        f"📱 Account: {row['account']}\n"
+        f"📌 Status: {row['status']}"
+    )
+
+    buttons = []
+
+    if row["status"] == "pending":
+
+        buttons.append([
+            InlineKeyboardButton(
+                "✅ Approve",
+                callback_data=(
+                    f"approve_{withdrawal_id}"
+                )
+            ),
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=(
+                    f"reject_{withdrawal_id}"
+                )
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 Pending Withdrawals",
+            callback_data="admin_withdrawals"
+        )
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+
+# =========================
+# APPROVE WITHDRAW
+# =========================
+
+async def approve_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Withdrawal request পাওয়া যায়নি।"
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ এই withdrawal already processed।"
+        )
+
+        return
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='approved'
+        WHERE id=?
+        AND status='pending'
+        """,
+        (withdrawal_id,)
+    )
+
+    conn.commit()
+
+    conn.close()
+
+    await query.edit_message_text(
+        "✅ WITHDRAWAL APPROVED\n\n"
+        f"🆔 Request: #{withdrawal_id}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"💰 Amount: {row['amount']} Points\n"
+        f"💳 Method: {row['method']}\n"
+        f"📱 Account: {row['account']}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "🎉 WITHDRAWAL APPROVED!\n\n"
+                f"🆔 Request: #{withdrawal_id}\n"
+                f"💰 Amount: {row['amount']} Points\n"
+                f"💳 Method: {row['method']}\n\n"
+                "✅ তোমার withdrawal approve করা হয়েছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Withdrawal approval notification error:",
+            e
+        )
+
+
+# =========================
+# REJECT WITHDRAW
+# =========================
+
+async def reject_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    conn = db()
+
+    try:
+
+        conn.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+            """,
+            (withdrawal_id,)
+        ).fetchone()
+
+        if not row:
+
+            conn.rollback()
+            conn.close()
+
+            await query.edit_message_text(
+                "❌ Withdrawal request পাওয়া যায়নি।"
+            )
+
+            return
+
+        if row["status"] != "pending":
+
+            conn.rollback()
+            conn.close()
+
+            await query.edit_message_text(
+                "⚠️ এই withdrawal already processed।"
+            )
+
+            return
+
+        conn.execute(
+            """
+            UPDATE withdrawals
+            SET status='rejected'
+            WHERE id=?
+            AND status='pending'
+            """,
+            (withdrawal_id,)
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET points = points + ?
+            WHERE user_id=?
+            """,
+            (
+                row["amount"],
+                row["user_id"]
+            )
+        )
+
+        conn.commit()
+
+    except Exception as e:
+
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        conn.close()
+
+        print(
+            "Reject withdrawal error:",
+            e
+        )
+
+        await query.edit_message_text(
+            "❌ Reject process failed।"
+        )
+
+        return
+
+    conn.close()
+
+    await query.edit_message_text(
+        "❌ WITHDRAWAL REJECTED\n\n"
+        f"🆔 Request: #{withdrawal_id}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"💰 Refunded: {row['amount']} Points"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "❌ WITHDRAWAL REJECTED\n\n"
+                f"🆔 Request: #{withdrawal_id}\n"
+                f"💰 Amount: {row['amount']} Points\n\n"
+                f"🔄 {row['amount']} Points তোমার balance-এ "
+                "refund করা হয়েছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Withdrawal rejection notification error:",
+            e
+        )
+
+
+# =========================
+# ADMIN BROADCAST
+# =========================
+
+async def broadcast_start(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+
+        return
+
+    context.user_data[
+        "broadcast_mode"
+    ] = True
+
+    await query.message.reply_text(
+        "📢 BROADCAST MESSAGE\n\n"
+        "যে message পাঠাতে চাও সেটা এখন পাঠাও।\n\n"
+        "Text message পাঠানো যাবে।"
+    )
+
+
+# =========================
+# ADMIN POINTS ACTION
+# =========================
+
+async def admin_points_action(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        return False
+
+    action = context.user_data.get(
+        "points_action"
+    )
+
+    target_user = context.user_data.get(
+        "points_user_id"
+    )
+
+    if not action or not target_user:
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        amount = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ শুধু সংখ্যা পাঠাও।\n\n"
+            "Example: 100"
+        )
+
+        return True
+
+    if amount <= 0:
+
+        await update.message.reply_text(
+            "❌ Amount 0-এর বেশি হতে হবে।"
+        )
+
+        return True
+
+    if action == "add":
+
+        success = admin_add_points(
+            target_user,
+            amount
+        )
+
+        message = (
+            f"✅ {amount} Points add করা হয়েছে।"
+        )
+
+    else:
+
+        success = admin_remove_points(
+            target_user,
+            amount
+        )
+
+        message = (
+            f"✅ {amount} Points remove করা হয়েছে।"
+        )
+
+    if not success:
+
+        await update.message.reply_text(
+            "❌ User পাওয়া যায়নি।"
+        )
+
+        context.user_data.pop(
+            "points_action",
+            None
+        )
+
+        context.user_data.pop(
+            "points_user_id",
+            None
+        )
+
+        return True
+
+    await update.message.reply_text(
+        message
+        + "\n\n"
+        + f"👤 User ID: {target_user}\n"
+        + f"💰 Current Points: "
+        + f"{points(target_user)}"
+    )
+
+    context.user_data.pop(
+        "points_action",
+        None
+    )
+
+    context.user_data.pop(
+        "points_user_id",
+        None
+    )
+
+    return True
+
+
+# =========================
+# ADD TASK TEXT PROCESS
+# =========================
+
+async def process_task_add(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        return False
+
+    step = context.user_data.get(
+        "task_add_step"
+    )
+
+    if not step:
+
+        return False
+
+    text = update.message.text.strip()
+
+    if step == "channel":
+
+        if not text.startswith("@"):
+
+            await update.message.reply_text(
+                "❌ Channel username অবশ্যই @ দিয়ে শুরু হবে।\n\n"
+                "Example: @MyChannel"
+            )
+
+            return True
+
+        context.user_data[
+            "task_channel"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "url"
+
+        await update.message.reply_text(
+            "🔗 এখন Channel Link পাঠাও।\n\n"
+            "Example:\n"
+            "https://t.me/MyChannel"
+        )
+
+        return True
+
+    if step == "url":
+
+        if not text.startswith(
+            "https://t.me/"
+        ):
+
+            await update.message.reply_text(
+                "❌ Valid Telegram link পাঠাও।"
+            )
+
+            return True
+
+        context.user_data[
+            "task_url"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "title"
+
+        await update.message.reply_text(
+            "📝 এখন Task Title পাঠাও।\n\n"
+            "Example:\n"
+            "📢 Join Channel"
+        )
+
+        return True
+
+    if step == "title":
+
+        context.user_data[
+            "task_title"
+        ] = text
+
+        context.user_data[
+            "task_add_step"
+        ] = "reward"
+
+        await update.message.reply_text(
+            "💰 এখন Reward Points পাঠাও।\n\n"
+            "Example:\n"
+            "10"
+        )
+
+        return True
+
+    if step == "reward":
+
+        try:
+
+            reward = int(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Reward অবশ্যই সংখ্যা হতে হবে।"
+            )
+
+            return True
+
+        if reward <= 0:
+
+            await update.message.reply_text(
+                "❌ Reward 0-এর বেশি হতে হবে।"
+            )
+
+            return True
+
+        channel = context.user_data.get(
+            "task_channel"
+        )
+
+        url = context.user_data.get(
+            "task_url"
+        )
+
+        title = context.user_data.get(
+            "task_title"
+        )
+
+        add_channel_task(
+            channel,
+            url,
+            title,
+            reward
+        )
+
+        await update.message.reply_text(
+            "🎉 TASK ADDED SUCCESSFULLY!\n\n"
+            f"📢 Channel: {channel}\n"
+            f"🔗 Link: {url}\n"
+            f"📝 Title: {title}\n"
+            f"💰 Reward: {reward} Points"
+        )
+
+        context.user_data.pop(
+            "task_add_step",
+            None
+        )
+
+        context.user_data.pop(
+            "task_channel",
+            None
+        )
+
+        context.user_data.pop(
+            "task_url",
+            None
+        )
+
+        context.user_data.pop(
+            "task_title",
+            None
+        )
+
+        return True
+
+    return False
+
+
+# =========================
+# USER MANAGEMENT TEXT
+# =========================
+
+async def process_user_management(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        return False
+
+    if not context.user_data.get(
+        "user_management"
+    ):
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        user_id = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Valid Telegram User ID পাঠাও।\n\n"
+            "Example:\n"
+            "123456789"
+        )
+
+        return True
+
+    await show_user_information(
+        update,
+        context,
+        user_id
+    )
+
+    context.user_data.pop(
+        "user_management",
+        None
+    )
+
+    return True
+
+
+# =========================
+# BROADCAST PROCESS
+# =========================
+
+async def process_broadcast(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        return False
+
+    if not context.user_data.get(
+        "broadcast_mode"
+    ):
+
+        return False
+
+    text = update.message.text
+
+    conn = db()
+
+    rows = conn.execute(
+        "SELECT user_id FROM users"
+    ).fetchall()
+
+    conn.close()
+
+    sent = 0
+    failed = 0
+
+    await update.message.reply_text(
+        "📢 Broadcast শুরু হয়েছে..."
+    )
+
+    for row in rows:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=text
+            )
+
+            sent += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                "Broadcast error:",
+                e
+            )
+
+    context.user_data.pop(
+        "broadcast_mode",
+        None
+    )
+
+    await update.message.reply_text(
+        "📢 BROADCAST COMPLETE\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+    return True
