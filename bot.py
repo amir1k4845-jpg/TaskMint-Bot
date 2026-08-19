@@ -982,3 +982,401 @@ async def daily_bonus(
         "⏰ আগামীকাল আবার claim করতে পারবে।",
         reply_markup=get_markup()
     )
+# =========================
+# WITHDRAW START
+# =========================
+
+async def withdraw_start(
+    update,
+    context
+):
+
+    if not feature_on("withdraw"):
+
+        await update.message.reply_text(
+            "⚠️ Withdraw feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return ConversationHandler.END
+
+    context.user_data.clear()
+
+    user_id = update.effective_user.id
+
+    balance = points(user_id)
+
+    minimum = setting_int(
+        "min_withdraw",
+        MIN_WITHDRAW
+    )
+
+    if balance < minimum:
+
+        await update.message.reply_text(
+            "💳 WITHDRAW\n\n"
+            f"💰 Your Balance: {balance} Points\n"
+            f"📌 Minimum Withdraw: {minimum} Points\n\n"
+            "❌ তোমার balance minimum withdraw-এর "
+            "চেয়ে কম।",
+            reply_markup=get_markup()
+        )
+
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "💳 WITHDRAW\n\n"
+        f"💰 Available Points: {balance}\n"
+        f"📌 Minimum Withdraw: {minimum}\n\n"
+        "কত Points withdraw করতে চাও?\n\n"
+        "Example: 100"
+    )
+
+    return AMOUNT
+
+
+# =========================
+# WITHDRAW AMOUNT
+# =========================
+
+async def withdraw_amount(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text.strip()
+
+    try:
+
+        amount = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ শুধু সংখ্যায় Amount পাঠাও।\n\n"
+            "Example: 100"
+        )
+
+        return AMOUNT
+
+    minimum = setting_int(
+        "min_withdraw",
+        MIN_WITHDRAW
+    )
+
+    balance = points(user_id)
+
+    if amount < minimum:
+
+        await update.message.reply_text(
+            f"❌ Minimum withdraw হলো "
+            f"{minimum} Points।\n\n"
+            "আবার Amount পাঠাও।"
+        )
+
+        return AMOUNT
+
+    if amount > balance:
+
+        await update.message.reply_text(
+            "❌ তোমার কাছে এত Points নেই।\n\n"
+            f"💰 Available: {balance} Points\n\n"
+            "আবার Amount পাঠাও।"
+        )
+
+        return AMOUNT
+
+    context.user_data[
+        "withdraw_amount"
+    ] = amount
+
+    await update.message.reply_text(
+        "💳 WITHDRAW METHOD\n\n"
+        "কোন Payment Method ব্যবহার করতে চাও?\n\n"
+        "Example:\n"
+        "Binance\n"
+        "Bkash\n"
+        "Nagad"
+    )
+
+    return METHOD
+
+
+# =========================
+# WITHDRAW METHOD
+# =========================
+
+async def withdraw_method(
+    update,
+    context
+):
+
+    method = update.message.text.strip()
+
+    if not method:
+
+        await update.message.reply_text(
+            "❌ Valid Payment Method পাঠাও।"
+        )
+
+        return METHOD
+
+    context.user_data[
+        "withdraw_method"
+    ] = method
+
+    await update.message.reply_text(
+        "📱 PAYMENT ACCOUNT\n\n"
+        f"💳 Method: {method}\n\n"
+        "তোমার Payment Account Number/"
+        "ID পাঠাও।"
+    )
+
+    return ACCOUNT
+
+
+# =========================
+# WITHDRAW ACCOUNT
+# =========================
+
+async def withdraw_account(
+    update,
+    context
+):
+
+    account = update.message.text.strip()
+
+    if not account:
+
+        await update.message.reply_text(
+            "❌ Valid Account/ID পাঠাও।"
+        )
+
+        return ACCOUNT
+
+    user = update.effective_user
+
+    amount = context.user_data.get(
+        "withdraw_amount"
+    )
+
+    method = context.user_data.get(
+        "withdraw_method"
+    )
+
+    if not amount or not method:
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ Withdrawal session expired।\n\n"
+            "আবার Withdraw শুরু করো।",
+            reply_markup=get_markup()
+        )
+
+        return ConversationHandler.END
+
+    balance = points(user.id)
+
+    if amount > balance:
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ তোমার balance পরিবর্তন হয়েছে।\n\n"
+            "আবার Withdraw চেষ্টা করো।",
+            reply_markup=get_markup()
+        )
+
+        return ConversationHandler.END
+
+    # Deduct points only when request is created
+    remove_points(
+        user.id,
+        amount
+    )
+
+    conn = db()
+
+    now = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    cursor = conn.execute(
+        """
+        INSERT INTO withdrawals(
+            user_id,
+            username,
+            amount,
+            method,
+            account,
+            status,
+            created_at
+        )
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (
+            user.id,
+            user.username or "",
+            amount,
+            method,
+            account,
+            "pending",
+            now
+        )
+    )
+
+    withdrawal_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        "✅ WITHDRAWAL REQUEST SENT!\n\n"
+        f"🆔 Request: #{withdrawal_id}\n"
+        f"💰 Amount: {amount} Points\n"
+        f"💳 Method: {method}\n"
+        f"📱 Account: {account}\n"
+        "📌 Status: Pending\n\n"
+        "⏳ Admin review করার পর payment process হবে।",
+        reply_markup=get_markup()
+    )
+
+    # Notify admin
+    if ADMIN_ID:
+
+        try:
+
+            username = (
+                f"@{user.username}"
+                if user.username
+                else "No username"
+            )
+
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🔔 NEW WITHDRAWAL\n\n"
+                    f"🆔 Request: #{withdrawal_id}\n"
+                    f"👤 User ID: {user.id}\n"
+                    f"👤 Username: {username}\n"
+                    f"💰 Amount: {amount} Points\n"
+                    f"💳 Method: {method}\n"
+                    f"📱 Account: {account}"
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                "Admin notification error:",
+                e
+            )
+
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================
+# WITHDRAW CANCEL
+# =========================
+
+async def withdraw_cancel(
+    update,
+    context
+):
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ Withdraw cancelled।",
+        reply_markup=get_markup()
+    )
+
+    return ConversationHandler.END
+
+
+# =========================
+# MY BALANCE
+# =========================
+
+async def my_balance(
+    update,
+    context
+):
+
+    if not feature_on("balance"):
+
+        await update.message.reply_text(
+            "⚠️ Balance feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+
+        register_user(
+            update.effective_user
+        )
+
+        user = get_user(
+            user_id
+        )
+
+    conn = db()
+
+    referral_row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE referred_by=?
+        AND referral_rewarded=1
+        """,
+        (user_id,)
+    ).fetchone()
+
+    task_row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM completed_tasks
+        WHERE user_id=?
+        """,
+        (user_id,)
+    ).fetchone()
+
+    conn.close()
+
+    referrals = (
+        referral_row["total"]
+        if referral_row
+        else 0
+    )
+
+    completed_tasks = (
+        task_row["total"]
+        if task_row
+        else 0
+    )
+
+    minimum = setting_int(
+        "min_withdraw",
+        MIN_WITHDRAW
+    )
+
+    await update.message.reply_text(
+        "📊 MY BALANCE\n\n"
+        f"💰 Points: {user['points']}\n"
+        f"👥 Referrals: {referrals}\n"
+        f"✅ Completed Tasks: {completed_tasks}\n\n"
+        f"💳 Minimum Withdraw: "
+        f"{minimum} Points",
+        reply_markup=get_markup()
+    )
