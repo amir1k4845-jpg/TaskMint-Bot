@@ -3420,3 +3420,468 @@ async def cancel_command(
         return True
 
     return False
+# =========================
+# GENERAL TEXT HANDLER
+# =========================
+
+async def all_text(
+    update,
+    context
+):
+
+    if not update.message:
+
+        return
+
+    user = update.effective_user
+
+    if not user:
+
+        return
+
+    # Register user if needed
+    register_user(user)
+
+    # Admin action first
+    if await admin_text_action(
+        update,
+        context
+    ):
+
+        return
+
+    text = update.message.text
+
+    # =========================
+    # MAIN MENU
+    # =========================
+
+    if text == get_setting(
+        "button_earn"
+    ):
+
+        if not feature_on("earn"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await earn_tasks_message(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == get_setting(
+        "button_referral"
+    ):
+
+        if not feature_on("referral"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await referral_message(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == get_setting(
+        "button_withdraw"
+    ):
+
+        if not feature_on("withdraw"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await withdraw_start(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == get_setting(
+        "button_daily"
+    ):
+
+        if not feature_on("daily"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await daily_bonus_message(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == get_setting(
+        "button_balance"
+    ):
+
+        if not feature_on("balance"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await balance_message(
+            update,
+            context
+        )
+
+        return
+
+
+    if text == get_setting(
+        "button_help"
+    ):
+
+        if not feature_on("help"):
+
+            await update.message.reply_text(
+                "❌ এই feature এখন বন্ধ আছে।"
+            )
+
+            return
+
+        await help_message(
+            update,
+            context
+        )
+
+        return
+
+
+    # =========================
+    # UNKNOWN TEXT
+    # =========================
+
+    await update.message.reply_text(
+        "❓ Command বুঝতে পারিনি।\n\n"
+        "নিচের Menu থেকে একটি option select করো।",
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# CALLBACK HANDLER
+# =========================
+
+async def callback_handler(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    data = query.data
+
+    # =========================
+    # ADMIN CALLBACKS
+    # =========================
+
+    if (
+        data.startswith("admin_")
+        or data.startswith("custom_")
+        or data.startswith("rename_button_")
+        or data.startswith("toggle_feature_")
+        or data.startswith("set_reward_")
+        or data.startswith("set_min_withdraw")
+        or data.startswith("view_user_")
+        or data.startswith("user_add_")
+        or data.startswith("user_remove_")
+        or data.startswith("delete_task_")
+        or data == "add_task"
+        or data.startswith("approve_withdraw_")
+        or data.startswith("reject_withdraw_")
+    ):
+
+        # Withdrawal reject is handled separately
+        if data.startswith(
+            "reject_withdraw_"
+        ):
+
+            await reject_withdraw_callback(
+                update,
+                context
+            )
+
+            return
+
+        await admin_callback(
+            update,
+            context
+        )
+
+        return
+
+
+    # =========================
+    # TASK VERIFY
+    # =========================
+
+    if data.startswith(
+        "verify_task_"
+    ):
+
+        await verify_task_callback(
+            update,
+            context
+        )
+
+        return
+
+
+    # =========================
+    # UNKNOWN CALLBACK
+    # =========================
+
+    await query.answer(
+        "❌ Unknown option.",
+        show_alert=True
+    )
+
+
+# =========================
+# ADMIN COMMAND
+# =========================
+
+async def admin_command(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+    await admin_panel(
+        update,
+        context
+    )
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "ERROR:",
+        context.error
+    )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not TOKEN:
+
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
+
+    # Database
+    init_db()
+
+    # Default channel task
+    create_default_task()
+
+    # Render health server
+    threading.Thread(
+        target=web_server,
+        daemon=True
+    ).start()
+
+    # Telegram application
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # =========================
+    # WITHDRAW CONVERSATION
+    # =========================
+
+    withdraw_handler = ConversationHandler(
+
+        entry_points=[
+            MessageHandler(
+                filters.TEXT
+                & ~filters.COMMAND,
+                withdraw_start
+            )
+        ],
+
+        states={
+
+            AMOUNT: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_amount
+                )
+            ],
+
+            METHOD: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_method
+                )
+            ],
+
+            ACCOUNT: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    withdraw_account
+                )
+            ]
+        },
+
+        fallbacks=[
+            CommandHandler(
+                "cancel",
+                withdraw_cancel
+            )
+        ],
+
+        allow_reentry=True
+    )
+
+
+    # =========================
+    # COMMAND HANDLERS
+    # =========================
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "cancel",
+            cancel_command
+        )
+    )
+
+
+    # =========================
+    # WITHDRAW HANDLER
+    # =========================
+
+    app.add_handler(
+        withdraw_handler
+    )
+
+
+    # =========================
+    # CALLBACK HANDLER
+    # =========================
+
+    app.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+
+    # =========================
+    # TEXT HANDLER
+    # =========================
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            all_text
+        )
+    )
+
+
+    # =========================
+    # ERROR HANDLER
+    # =========================
+
+    app.add_error_handler(
+        error_handler
+    )
+
+
+    print(
+        "🤖 TaskMint Bot is starting..."
+    )
+
+    print(
+        "🌐 Health server running on port:",
+        PORT
+    )
+
+    print(
+        "🗄️ Database:",
+        DB_FILE
+    )
+
+    print(
+        "👑 Admin ID:",
+        ADMIN_ID
+    )
+
+    # Start bot
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+
+    main()
