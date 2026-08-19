@@ -1668,3 +1668,966 @@ async def custom_withdraw(
             keyboard
         )
 )
+# =========================
+# ADMIN CALLBACK HANDLER
+# =========================
+
+async def admin_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+
+    # =========================
+    # ADMIN BACK
+    # =========================
+
+    if data == "admin_back":
+
+        keyboard = [
+
+            [
+                InlineKeyboardButton(
+                    "📊 Statistics",
+                    callback_data="admin_stats"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "👥 User Management",
+                    callback_data="admin_users"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📋 Manage Tasks",
+                    callback_data="admin_tasks"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "💳 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "⚙️ Bot Customization",
+                    callback_data="admin_customize"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📢 Broadcast",
+                    callback_data="admin_broadcast"
+                )
+            ]
+        ]
+
+        await query.edit_message_text(
+            "👑 ADMIN PANEL\n\n"
+            "Bot control করার জন্য option select করো:",
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+
+        return
+
+
+    # =========================
+    # CUSTOMIZATION
+    # =========================
+
+    if data == "admin_customize":
+
+        await admin_customize(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # BUTTON SETTINGS
+    # =========================
+
+    if data == "custom_buttons":
+
+        await custom_buttons(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # FEATURE SETTINGS
+    # =========================
+
+    if data == "custom_features":
+
+        await custom_features(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # REWARD SETTINGS
+    # =========================
+
+    if data == "custom_rewards":
+
+        await custom_rewards(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # WITHDRAW SETTINGS
+    # =========================
+
+    if data == "custom_withdraw":
+
+        await custom_withdraw(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # TOGGLE FEATURE
+    # =========================
+
+    if data.startswith(
+        "toggle_feature_"
+    ):
+
+        key = data.replace(
+            "toggle_feature_",
+            "",
+            1
+        )
+
+        if key not in (
+            "earn",
+            "referral",
+            "withdraw",
+            "daily",
+            "balance",
+            "help"
+        ):
+
+            return
+
+        current = feature_on(
+            key
+        )
+
+        set_setting(
+            f"feature_{key}",
+            "0" if current else "1"
+        )
+
+        await custom_features(
+            query
+        )
+
+        return
+
+
+    # =========================
+    # RENAME BUTTON
+    # =========================
+
+    if data.startswith(
+        "rename_button_"
+    ):
+
+        key = data.replace(
+            "rename_button_",
+            "",
+            1
+        )
+
+        if key not in (
+            "earn",
+            "referral",
+            "withdraw",
+            "daily",
+            "balance",
+            "help"
+        ):
+
+            return
+
+        context.user_data[
+            "admin_action"
+        ] = f"rename_{key}"
+
+        await query.message.reply_text(
+            "✏️ BUTTON NAME CHANGE\n\n"
+            f"Current Name:\n"
+            f"{get_setting(f'button_{key}')}\n\n"
+            "নতুন নাম পাঠাও।"
+        )
+
+        return
+
+
+    # =========================
+    # REWARD BUTTONS
+    # =========================
+
+    if data == "set_reward_task":
+
+        context.user_data[
+            "admin_action"
+        ] = "reward_task"
+
+        await query.message.reply_text(
+            "📋 TASK REWARD\n\n"
+            "নতুন reward amount পাঠাও।\n\n"
+            "Example: 15"
+        )
+
+        return
+
+
+    if data == "set_reward_referral":
+
+        context.user_data[
+            "admin_action"
+        ] = "reward_referral"
+
+        await query.message.reply_text(
+            "👥 REFERRAL REWARD\n\n"
+            "নতুন referral reward পাঠাও।\n\n"
+            "Example: 25"
+        )
+
+        return
+
+
+    if data == "set_reward_daily":
+
+        context.user_data[
+            "admin_action"
+        ] = "reward_daily"
+
+        await query.message.reply_text(
+            "🎁 DAILY BONUS REWARD\n\n"
+            "নতুন daily reward পাঠাও।\n\n"
+            "Example: 15"
+        )
+
+        return
+
+
+    # =========================
+    # MINIMUM WITHDRAW
+    # =========================
+
+    if data == "set_min_withdraw":
+
+        context.user_data[
+            "admin_action"
+        ] = "min_withdraw"
+
+        await query.message.reply_text(
+            "💳 MINIMUM WITHDRAW\n\n"
+            "নতুন minimum amount পাঠাও।\n\n"
+            "Example: 200"
+        )
+
+        return
+
+
+    # =========================
+    # STATISTICS
+    # =========================
+
+    if data == "admin_stats":
+
+        conn = db()
+
+        total_users = conn.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        total_points = conn.execute(
+            """
+            SELECT COALESCE(
+                SUM(points),
+                0
+            )
+            FROM users
+            """
+        ).fetchone()[0]
+
+        total_tasks = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM channel_tasks
+            WHERE active=1
+            """
+        ).fetchone()[0]
+
+        total_withdrawals = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM withdrawals
+            """
+        ).fetchone()[0]
+
+        pending_withdrawals = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM withdrawals
+            WHERE status='pending'
+            """
+        ).fetchone()[0]
+
+        completed_tasks = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks
+            """
+        ).fetchone()[0]
+
+        conn.close()
+
+        await query.edit_message_text(
+            "📊 TASKMINT STATISTICS\n\n"
+            f"👥 Total Users: {total_users}\n"
+            f"💰 Total Points: {total_points}\n"
+            f"📋 Active Tasks: {total_tasks}\n"
+            f"✅ Completed Tasks: {completed_tasks}\n"
+            f"💳 Withdrawals: {total_withdrawals}\n"
+            f"⏳ Pending: {pending_withdrawals}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Admin Panel",
+                        callback_data="admin_back"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # =========================
+    # USER MANAGEMENT
+    # =========================
+
+    if data == "admin_users":
+
+        conn = db()
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM users
+            ORDER BY rowid DESC
+            LIMIT 30
+            """
+        ).fetchall()
+
+        conn.close()
+
+        if not rows:
+
+            await query.edit_message_text(
+                "👥 কোনো user পাওয়া যায়নি।"
+            )
+
+            return
+
+        text = (
+            "👥 USER MANAGEMENT\n\n"
+        )
+
+        buttons = []
+
+        for row in rows:
+
+            username = (
+                f"@{row['username']}"
+                if row["username"]
+                else "No username"
+            )
+
+            text += (
+                f"🆔 {row['user_id']}\n"
+                f"👤 {username}\n"
+                f"💰 {row['points']} Points\n\n"
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"👤 {row['user_id']}",
+                    callback_data=(
+                        f"view_user_{row['user_id']}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "⬅️ Admin Panel",
+                callback_data="admin_back"
+            )
+        ])
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+
+    # =========================
+    # VIEW USER
+    # =========================
+
+    if data.startswith(
+        "view_user_"
+    ):
+
+        try:
+
+            target_id = int(
+                data.replace(
+                    "view_user_",
+                    "",
+                    1
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            return
+
+        info = get_user_info(
+            target_id
+        )
+
+        if not info:
+
+            await query.answer(
+                "❌ User not found.",
+                show_alert=True
+            )
+
+            return
+
+        user = info["user"]
+
+        username = (
+            f"@{user['username']}"
+            if user["username"]
+            else "No username"
+        )
+
+        await query.edit_message_text(
+            "👤 USER DETAILS\n\n"
+            f"🆔 ID: {user['user_id']}\n"
+            f"👤 Username: {username}\n"
+            f"📝 Name: {user['first_name']}\n"
+            f"💰 Points: {user['points']}\n"
+            f"👥 Referrals: {info['referrals']}\n"
+            f"📋 Tasks: {info['tasks']}",
+            reply_markup=InlineKeyboardMarkup([
+
+                [
+                    InlineKeyboardButton(
+                        "➕ Add Points",
+                        callback_data=(
+                            f"user_add_{target_id}"
+                        )
+                    ),
+
+                    InlineKeyboardButton(
+                        "➖ Remove Points",
+                        callback_data=(
+                            f"user_remove_{target_id}"
+                        )
+                    )
+                ],
+
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Users",
+                        callback_data="admin_users"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # =========================
+    # ADD USER POINTS
+    # =========================
+
+    if data.startswith(
+        "user_add_"
+    ):
+
+        try:
+
+            target_id = int(
+                data.replace(
+                    "user_add_",
+                    "",
+                    1
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            return
+
+        context.user_data[
+            "admin_action"
+        ] = "user_add"
+
+        context.user_data[
+            "target_user"
+        ] = target_id
+
+        await query.message.reply_text(
+            "➕ ADD POINTS\n\n"
+            f"User ID: {target_id}\n\n"
+            "কত Points add করবে?\n"
+            "Example: 50"
+        )
+
+        return
+
+
+    # =========================
+    # REMOVE USER POINTS
+    # =========================
+
+    if data.startswith(
+        "user_remove_"
+    ):
+
+        try:
+
+            target_id = int(
+                data.replace(
+                    "user_remove_",
+                    "",
+                    1
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            return
+
+        context.user_data[
+            "admin_action"
+        ] = "user_remove"
+
+        context.user_data[
+            "target_user"
+        ] = target_id
+
+        await query.message.reply_text(
+            "➖ REMOVE POINTS\n\n"
+            f"User ID: {target_id}\n\n"
+            "কত Points remove করবে?\n"
+            "Example: 50"
+        )
+
+        return
+
+
+    # =========================
+    # MANAGE TASKS
+    # =========================
+
+    if data == "admin_tasks":
+
+        rows = get_channel_tasks()
+
+        text = (
+            "📋 MANAGE TASKS\n\n"
+        )
+
+        buttons = []
+
+        if not rows:
+
+            text += (
+                "এখন কোনো active task নেই।"
+            )
+
+        else:
+
+            for task in rows:
+
+                text += (
+                    f"#{task['id']} "
+                    f"{task['title']}\n"
+                    f"📢 {task['channel']}\n"
+                    f"💰 +{task['reward']} Points\n\n"
+                )
+
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"🗑 Delete #{task['id']}",
+                        callback_data=(
+                            f"delete_task_{task['id']}"
+                        )
+                    )
+                ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "➕ Add Task",
+                callback_data="add_task"
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "⬅️ Admin Panel",
+                callback_data="admin_back"
+            )
+        ])
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+
+    # =========================
+    # ADD TASK
+    # =========================
+
+    if data == "add_task":
+
+        context.user_data[
+            "admin_action"
+        ] = "add_task"
+
+        await query.message.reply_text(
+            "➕ ADD NEW TASK\n\n"
+            "এই format-এ পাঠাও:\n\n"
+            "@channel | "
+            "https://t.me/channel | "
+            "Title | Reward\n\n"
+            "Example:\n"
+            "@mychannel | "
+            "https://t.me/mychannel | "
+            "📢 Join Channel | 10"
+        )
+
+        return
+
+
+    # =========================
+    # DELETE TASK
+    # =========================
+
+    if data.startswith(
+        "delete_task_"
+    ):
+
+        try:
+
+            task_id = int(
+                data.replace(
+                    "delete_task_",
+                    "",
+                    1
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            return
+
+        delete_channel_task(
+            task_id
+        )
+
+        await query.answer(
+            "✅ Task deleted.",
+            show_alert=True
+        )
+
+        await query.edit_message_text(
+            "✅ Task deleted successfully.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "📋 Manage Tasks",
+                        callback_data="admin_tasks"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Admin Panel",
+                        callback_data="admin_back"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+
+    # =========================
+    # WITHDRAWAL LIST
+    # =========================
+
+    if data == "admin_withdrawals":
+
+        conn = db()
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE status='pending'
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+        conn.close()
+
+        if not rows:
+
+            await query.edit_message_text(
+                "💳 কোনো pending withdrawal নেই।",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Admin Panel",
+                            callback_data="admin_back"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        text = (
+            "💳 PENDING WITHDRAWALS\n\n"
+        )
+
+        buttons = []
+
+        for row in rows:
+
+            text += (
+                f"🆔 #{row['id']}\n"
+                f"👤 User: {row['user_id']}\n"
+                f"💰 Amount: {row['amount']}\n"
+                f"💳 Method: {row['method']}\n"
+                f"📱 Account: {row['account']}\n\n"
+            )
+
+            buttons.append([
+
+                InlineKeyboardButton(
+                    f"✅ Approve #{row['id']}",
+                    callback_data=(
+                        f"approve_withdraw_{row['id']}"
+                    )
+                ),
+
+                InlineKeyboardButton(
+                    f"❌ Reject #{row['id']}",
+                    callback_data=(
+                        f"reject_withdraw_{row['id']}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "⬅️ Admin Panel",
+                callback_data="admin_back"
+            )
+        ])
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+
+    # =========================
+    # APPROVE WITHDRAWAL
+    # =========================
+
+    if data.startswith(
+        "approve_withdraw_"
+    ):
+
+        try:
+
+            withdrawal_id = int(
+                data.replace(
+                    "approve_withdraw_",
+                    "",
+                    1
+                )
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            return
+
+        conn = db()
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+            """,
+            (
+                withdrawal_id,
+            )
+        ).fetchone()
+
+        if not row:
+
+            conn.close()
+
+            await query.answer(
+                "❌ Withdrawal not found.",
+                show_alert=True
+            )
+
+            return
+
+        if row["status"] != "pending":
+
+            conn.close()
+
+            await query.answer(
+                "⚠️ Already processed.",
+                show_alert=True
+            )
+
+            return
+
+        conn.execute(
+            """
+            UPDATE withdrawals
+            SET status='approved'
+            WHERE id=?
+            """,
+            (
+                withdrawal_id,
+            )
+        )
+
+        conn.commit()
+        conn.close()
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "✅ WITHDRAWAL APPROVED\n\n"
+                    f"🆔 Request: #{withdrawal_id}\n"
+                    f"💰 Amount: {row['amount']} Points\n"
+                    f"💳 Method: {row['method']}\n\n"
+                    "Payment process করা হবে।"
+                )
+            )
+
+        except Exception:
+            pass
+
+        await query.answer(
+            "✅ Withdrawal approved.",
+            show_alert=True
+        )
+
+        await query.edit_message_text(
+            "✅ Withdrawal approved successfully.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "💳 Pending Withdrawals",
+                        callback_data="admin_withdrawals"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Admin Panel",
+                        callback_data="admin_back"
+                    )
+                ]
+            ])
+        )
+
+        return
