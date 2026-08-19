@@ -1380,3 +1380,566 @@ async def my_balance(
         f"{minimum} Points",
         reply_markup=get_markup()
     )
+# =========================
+# HELP
+# =========================
+
+async def help_menu(
+    update,
+    context
+):
+
+    if not feature_on("help"):
+
+        await update.message.reply_text(
+            "⚠️ Help feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    await update.message.reply_text(
+        "ℹ️ HELP & INFORMATION\n\n"
+
+        "💰 Earn Tasks\n"
+        "→ Channel/Task complete করে Points earn করো।\n\n"
+
+        "👥 Refer & Earn\n"
+        "→ Referral link share করে bonus earn করো।\n\n"
+
+        "🎁 Daily Bonus\n"
+        "→ প্রতিদিন একবার Daily Bonus claim করো।\n\n"
+
+        "📊 My Balance\n"
+        "→ তোমার Points, Referral এবং completed task দেখো।\n\n"
+
+        "💳 Withdraw\n"
+        "→ Minimum Points পূরণ হলে withdrawal request পাঠাও।\n\n"
+
+        "⚠️ কোনো সমস্যা হলে Admin-এর সাথে যোগাযোগ করো।",
+
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup([
+
+        [
+            InlineKeyboardButton(
+                "👥 Users",
+                callback_data="admin_users"
+            ),
+            InlineKeyboardButton(
+                "💰 Add Points",
+                callback_data="admin_add_points"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "➖ Remove Points",
+                callback_data="admin_remove_points"
+            ),
+            InlineKeyboardButton(
+                "💳 Withdrawals",
+                callback_data="admin_withdrawals"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "⚙️ Bot Settings",
+                callback_data="admin_settings"
+            )
+        ],
+
+    ])
+
+
+async def admin_command(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ Unauthorized."
+        )
+
+        return
+
+    await update.message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        "নিচের menu থেকে একটি option select করো:",
+        reply_markup=admin_keyboard()
+    )
+
+
+# =========================
+# ADMIN USERS
+# =========================
+
+async def admin_user_search(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+
+        return
+
+    await query.message.reply_text(
+        "👤 USER SEARCH\n\n"
+        "যে User-এর তথ্য দেখতে চাও "
+        "তার Telegram User ID পাঠাও।\n\n"
+        "Example: 123456789"
+    )
+
+    context.user_data[
+        "admin_user_search"
+    ] = True
+
+
+async def process_user_management(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return False
+
+    if not context.user_data.get(
+        "admin_user_search"
+    ):
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        user_id = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Valid Telegram User ID পাঠাও।"
+        )
+
+        return True
+
+    user = get_user(user_id)
+
+    if not user:
+
+        await update.message.reply_text(
+            "❌ এই User পাওয়া যায়নি।"
+        )
+
+        context.user_data.pop(
+            "admin_user_search",
+            None
+        )
+
+        return True
+
+    conn = db()
+
+    referral_row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE referred_by=?
+        AND referral_rewarded=1
+        """,
+        (user_id,)
+    ).fetchone()
+
+    task_row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM completed_tasks
+        WHERE user_id=?
+        """,
+        (user_id,)
+    ).fetchone()
+
+    withdrawal_row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM withdrawals
+        WHERE user_id=?
+        """,
+        (user_id,)
+    ).fetchone()
+
+    conn.close()
+
+    username = (
+        f"@{user['username']}"
+        if user["username"]
+        else "No username"
+    )
+
+    await update.message.reply_text(
+        "👤 USER INFORMATION\n\n"
+        f"🆔 User ID: {user['user_id']}\n"
+        f"👤 Username: {username}\n"
+        f"📝 Name: {user['first_name']}\n\n"
+        f"💰 Points: {user['points']}\n"
+        f"👥 Referrals: {referral_row['total']}\n"
+        f"✅ Tasks: {task_row['total']}\n"
+        f"💳 Withdrawals: {withdrawal_row['total']}"
+    )
+
+    context.user_data.pop(
+        "admin_user_search",
+        None
+    )
+
+    return True
+
+
+# =========================
+# ADD POINTS MENU
+# =========================
+
+async def admin_add_points_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    context.user_data[
+        "points_action"
+    ] = "add"
+
+    context.user_data[
+        "points_waiting_user"
+    ] = True
+
+    await query.message.reply_text(
+        "➕ ADD POINTS\n\n"
+        "প্রথমে User ID পাঠাও।\n\n"
+        "Example: 123456789"
+    )
+
+
+# =========================
+# REMOVE POINTS MENU
+# =========================
+
+async def admin_remove_points_menu(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        return
+
+    context.user_data[
+        "points_action"
+    ] = "remove"
+
+    context.user_data[
+        "points_waiting_user"
+    ] = True
+
+    await query.message.reply_text(
+        "➖ REMOVE POINTS\n\n"
+        "প্রথমে User ID পাঠাও।\n\n"
+        "Example: 123456789"
+    )
+
+
+# =========================
+# PROCESS POINTS USER
+# =========================
+
+async def process_points_user(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return False
+
+    if not context.user_data.get(
+        "points_waiting_user"
+    ):
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        target_user = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Valid User ID পাঠাও।"
+        )
+
+        return True
+
+    user = get_user(target_user)
+
+    if not user:
+
+        await update.message.reply_text(
+            "❌ এই User পাওয়া যায়নি।"
+        )
+
+        context.user_data.pop(
+            "points_waiting_user",
+            None
+        )
+
+        context.user_data.pop(
+            "points_action",
+            None
+        )
+
+        return True
+
+    context.user_data[
+        "points_user_id"
+    ] = target_user
+
+    context.user_data.pop(
+        "points_waiting_user",
+        None
+    )
+
+    action = context.user_data.get(
+        "points_action"
+    )
+
+    if action == "add":
+
+        message = (
+            "➕ ADD POINTS\n\n"
+            f"👤 User ID: {target_user}\n"
+            f"💰 Current Points: {user['points']}\n\n"
+            "কত Points add করতে চাও?"
+        )
+
+    else:
+
+        message = (
+            "➖ REMOVE POINTS\n\n"
+            f"👤 User ID: {target_user}\n"
+            f"💰 Current Points: {user['points']}\n\n"
+            "কত Points remove করতে চাও?"
+        )
+
+    await update.message.reply_text(
+        message
+    )
+
+    context.user_data[
+        "points_waiting_amount"
+    ] = True
+
+    return True
+
+
+# =========================
+# PROCESS POINTS AMOUNT
+# =========================
+
+async def admin_points_action(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return False
+
+    if not context.user_data.get(
+        "points_waiting_amount"
+    ):
+
+        return False
+
+    text = update.message.text.strip()
+
+    try:
+
+        amount = int(text)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ শুধু সংখ্যা পাঠাও।\n\n"
+            "Example: 100"
+        )
+
+        return True
+
+    if amount <= 0:
+
+        await update.message.reply_text(
+            "❌ Amount 0-এর বেশি হতে হবে।"
+        )
+
+        return True
+
+    target_user = context.user_data.get(
+        "points_user_id"
+    )
+
+    action = context.user_data.get(
+        "points_action"
+    )
+
+    if not target_user:
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ Admin action expired।"
+        )
+
+        return True
+
+    user = get_user(target_user)
+
+    if not user:
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ User পাওয়া যায়নি।"
+        )
+
+        return True
+
+    if action == "add":
+
+        add_points(
+            target_user,
+            amount
+        )
+
+        title = "➕ POINTS ADDED"
+
+    else:
+
+        remove_points(
+            target_user,
+            amount
+        )
+
+        title = "➖ POINTS REMOVED"
+
+    new_balance = points(
+        target_user
+    )
+
+    await update.message.reply_text(
+        f"{title}\n\n"
+        f"👤 User ID: {target_user}\n"
+        f"💰 Amount: {amount} Points\n"
+        f"📊 New Balance: {new_balance} Points"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=target_user,
+            text=(
+                f"{title}\n\n"
+                f"💰 Amount: {amount} Points\n"
+                f"📊 Your Balance: "
+                f"{new_balance} Points"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "User points notification error:",
+            e
+        )
+
+    context.user_data.clear()
+
+    return True
+
+
+# =========================
+# ADMIN CANCEL
+# =========================
+
+async def admin_cancel(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ Admin action cancelled।",
+        reply_markup=get_markup()
+        )
