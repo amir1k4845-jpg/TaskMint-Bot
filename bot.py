@@ -1943,3 +1943,460 @@ async def admin_cancel(
         "❌ Admin action cancelled।",
         reply_markup=get_markup()
         )
+# =========================
+# PENDING WITHDRAWALS
+# =========================
+
+async def withdrawal_list(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+        return
+
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE status='pending'
+        ORDER BY id ASC
+        LIMIT 30
+        """
+    ).fetchall()
+
+    conn.close()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "💳 PENDING WITHDRAWALS\n\n"
+            "✅ কোনো pending withdrawal নেই।",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    buttons = []
+
+    text = (
+        "💳 PENDING WITHDRAWALS\n\n"
+        "নিচের request select করো:"
+    )
+
+    for row in rows:
+
+        text += (
+            f"\n\n🆔 #{row['id']}"
+            f" — {row['amount']} Points"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"💳 #{row['id']} "
+                f"({row['amount']} Points)",
+                callback_data=(
+                    f"withdraw_{row['id']}"
+                )
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "🔙 Admin Panel",
+            callback_data="admin_home"
+        )
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+
+# =========================
+# WITHDRAWAL DETAILS
+# =========================
+
+async def withdrawal_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+
+        return
+
+    data = query.data
+
+    if data.startswith(
+        "withdraw_"
+    ):
+
+        await query.answer()
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await query.answer(
+                "❌ Invalid request",
+                show_alert=True
+            )
+
+            return
+
+        conn = db()
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM withdrawals
+            WHERE id=?
+            """,
+            (withdrawal_id,)
+        ).fetchone()
+
+        conn.close()
+
+        if not row:
+
+            await query.edit_message_text(
+                "❌ Withdrawal request পাওয়া যায়নি।"
+            )
+
+            return
+
+        username = (
+            f"@{row['username']}"
+            if row["username"]
+            else "No username"
+        )
+
+        buttons = []
+
+        if row["status"] == "pending":
+
+            buttons.append([
+                InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=(
+                        f"approve_{withdrawal_id}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject",
+                    callback_data=(
+                        f"reject_{withdrawal_id}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Pending Withdrawals",
+                callback_data="admin_withdrawals"
+            )
+        ])
+
+        await query.edit_message_text(
+            "💳 WITHDRAWAL DETAILS\n\n"
+            f"🆔 Request ID: #{row['id']}\n"
+            f"👤 User ID: {row['user_id']}\n"
+            f"👤 Username: {username}\n"
+            f"💰 Amount: {row['amount']} Points\n"
+            f"💳 Method: {row['method']}\n"
+            f"📱 Account: {row['account']}\n"
+            f"📌 Status: {row['status']}",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+    if data.startswith(
+        "approve_"
+    ):
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await query.answer(
+                "❌ Invalid request",
+                show_alert=True
+            )
+
+            return
+
+        await approve_withdrawal(
+            update,
+            context,
+            withdrawal_id
+        )
+
+        return
+
+    if data.startswith(
+        "reject_"
+    ):
+
+        try:
+
+            withdrawal_id = int(
+                data.split("_")[1]
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await query.answer(
+                "❌ Invalid request",
+                show_alert=True
+            )
+
+            return
+
+        await reject_withdrawal(
+            update,
+            context,
+            withdrawal_id
+        )
+
+        return
+
+
+# =========================
+# APPROVE WITHDRAWAL
+# =========================
+
+async def approve_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Withdrawal request পাওয়া যায়নি।"
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ এই withdrawal already processed।"
+        )
+
+        return
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='approved'
+        WHERE id=?
+        AND status='pending'
+        """,
+        (withdrawal_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "✅ WITHDRAWAL APPROVED\n\n"
+        f"🆔 Request: #{withdrawal_id}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"💰 Amount: {row['amount']} Points\n"
+        f"💳 Method: {row['method']}\n"
+        f"📱 Account: {row['account']}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "🎉 WITHDRAWAL APPROVED!\n\n"
+                f"🆔 Request: #{withdrawal_id}\n"
+                f"💰 Amount: {row['amount']} Points\n"
+                f"💳 Method: {row['method']}\n"
+                f"📱 Account: {row['account']}\n\n"
+                "✅ তোমার withdrawal approve করা হয়েছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Approval notification error:",
+            e
+        )
+
+
+# =========================
+# REJECT WITHDRAWAL
+# =========================
+
+async def reject_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Withdrawal request পাওয়া যায়নি।"
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ এই withdrawal already processed।"
+        )
+
+        return
+
+    # Return the withdrawn points
+    conn.execute(
+        """
+        UPDATE users
+        SET points = points + ?
+        WHERE user_id=?
+        """,
+        (
+            row["amount"],
+            row["user_id"]
+        )
+    )
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='rejected'
+        WHERE id=?
+        AND status='pending'
+        """,
+        (withdrawal_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "❌ WITHDRAWAL REJECTED\n\n"
+        f"🆔 Request: #{withdrawal_id}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"💰 Amount Returned: "
+        f"{row['amount']} Points\n\n"
+        "↩️ Points user balance-এ ফেরত দেওয়া হয়েছে।"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "❌ WITHDRAWAL REJECTED\n\n"
+                f"🆔 Request: #{withdrawal_id}\n"
+                f"💰 Amount: {row['amount']} Points\n\n"
+                "↩️ তোমার Points balance-এ ফেরত দেওয়া হয়েছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Rejection notification error:",
+            e
+    )
