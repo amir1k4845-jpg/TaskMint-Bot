@@ -2400,3 +2400,919 @@ async def reject_withdrawal(
             "Rejection notification error:",
             e
     )
+# =========================
+# BOT SETTINGS MENU
+# =========================
+
+def settings_menu_keyboard():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🔘 Button Settings",
+                callback_data="settings_buttons"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ Reward & Withdraw Settings",
+                callback_data="settings_rewards"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Admin Panel",
+                callback_data="admin_home"
+            )
+        ]
+    ])
+
+
+def button_settings_keyboard():
+
+    rows = []
+
+    for key, label in BUTTON_KEYS:
+
+        enabled = (
+            "ON"
+            if feature_on(key)
+            else "OFF"
+        )
+
+        rows.append([
+            InlineKeyboardButton(
+                f"{get_setting('button_' + key)} [{enabled}]",
+                callback_data=f"toggle_{key}"
+            )
+        ])
+
+        rows.append([
+            InlineKeyboardButton(
+                f"✏️ Rename {label}",
+                callback_data=f"rename_{key}"
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton(
+            "🔙 Settings",
+            callback_data="admin_settings"
+        )
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def reward_settings_keyboard():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🎯 Task Reward",
+                callback_data="setting_task_reward"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 Referral Reward",
+                callback_data="setting_ref_reward"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🎁 Daily Reward",
+                callback_data="setting_daily_reward"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Minimum Withdraw",
+                callback_data="setting_min_withdraw"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Settings",
+                callback_data="admin_settings"
+            )
+        ]
+    ])
+
+
+# =========================
+# ADMIN SETTINGS
+# =========================
+
+async def admin_settings(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    await query.edit_message_text(
+        "⚙️ BOT SETTINGS\n\n"
+        "নিচের option থেকে settings পরিবর্তন করো।",
+        reply_markup=settings_menu_keyboard()
+    )
+
+
+# =========================
+# BUTTON SETTINGS
+# =========================
+
+async def settings_buttons(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    await query.edit_message_text(
+        "🔘 BUTTON SETTINGS\n\n"
+        "ON/OFF করতে button-এর উপর চাপো।\n"
+        "নাম পরিবর্তন করতে Rename চাপো।",
+        reply_markup=button_settings_keyboard()
+    )
+
+
+# =========================
+# REWARD SETTINGS
+# =========================
+
+async def settings_rewards(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    await query.edit_message_text(
+        "⚙️ REWARD & WITHDRAW SETTINGS\n\n"
+        f"🎯 Task Reward: "
+        f"{setting_int('reward_task', TASK_REWARD)}\n"
+        f"👥 Referral Reward: "
+        f"{setting_int('reward_referral', REFERRAL_REWARD)}\n"
+        f"🎁 Daily Reward: "
+        f"{setting_int('reward_daily', DAILY_REWARD)}\n"
+        f"💳 Minimum Withdraw: "
+        f"{setting_int('min_withdraw', MIN_WITHDRAW)}",
+        reply_markup=reward_settings_keyboard()
+    )
+
+
+# =========================
+# TOGGLE BUTTON
+# =========================
+
+async def toggle_feature(
+    update,
+    context,
+    key
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    current = feature_on(key)
+
+    set_setting(
+        f"feature_{key}",
+        "0" if current else "1"
+    )
+
+    await query.edit_message_text(
+        "🔘 BUTTON SETTINGS\n\n"
+        "✅ Setting updated successfully.",
+        reply_markup=button_settings_keyboard()
+    )
+
+
+# =========================
+# RENAME BUTTON
+# =========================
+
+async def rename_button(
+    update,
+    context,
+    key
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    context.user_data[
+        "rename_button"
+    ] = key
+
+    label = dict(
+        BUTTON_KEYS
+    ).get(
+        key,
+        key
+    )
+
+    await query.message.reply_text(
+        f"✏️ RENAME {label.upper()}\n\n"
+        "নতুন button name পাঠাও।\n\n"
+        "Example: 💰 Tasks"
+    )
+
+
+# =========================
+# PROCESS RENAME
+# =========================
+
+async def process_rename(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+        return False
+
+    key = context.user_data.get(
+        "rename_button"
+    )
+
+    if not key:
+        return False
+
+    new_name = update.message.text.strip()
+
+    if not new_name:
+
+        await update.message.reply_text(
+            "❌ Button name empty হতে পারবে না।"
+        )
+
+        return True
+
+    set_setting(
+        f"button_{key}",
+        new_name
+    )
+
+    context.user_data.pop(
+        "rename_button",
+        None
+    )
+
+    await update.message.reply_text(
+        "✅ Button name successfully changed!",
+        reply_markup=get_markup()
+    )
+
+    return True
+
+
+# =========================
+# BROADCAST
+# =========================
+
+async def broadcast_start(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if not is_admin(
+        query.from_user.id
+    ):
+        return
+
+    context.user_data[
+        "broadcast"
+    ] = True
+
+    await query.message.reply_text(
+        "📢 BROADCAST\n\n"
+        "যে message সবাইকে পাঠাতে চাও "
+        "সেটা এখন পাঠাও।\n\n"
+        "❌ Cancel করতে /cancel পাঠাও।"
+    )
+
+
+async def process_broadcast(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+        return False
+
+    if not context.user_data.get(
+        "broadcast"
+    ):
+        return False
+
+    text = update.message.text
+
+    if text == "/cancel":
+
+        context.user_data.pop(
+            "broadcast",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ Broadcast cancelled।",
+            reply_markup=get_markup()
+        )
+
+        return True
+
+    conn = db()
+
+    users = conn.execute(
+        """
+        SELECT user_id
+        FROM users
+        """
+    ).fetchall()
+
+    conn.close()
+
+    sent = 0
+    failed = 0
+
+    for row in users:
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=(
+                    "📢 ANNOUNCEMENT\n\n"
+                    f"{text}"
+                )
+            )
+
+            sent += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                "Broadcast error:",
+                e
+            )
+
+    context.user_data.pop(
+        "broadcast",
+        None
+    )
+
+    await update.message.reply_text(
+        "📢 BROADCAST COMPLETE\n\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}",
+        reply_markup=get_markup()
+    )
+
+    return True
+
+
+# =========================
+# SETTINGS CALLBACK ROUTER
+# =========================
+
+async def settings_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    data = query.data
+
+    if data == "admin_settings":
+
+        await admin_settings(
+            update,
+            context
+        )
+
+        return True
+
+    if data == "settings_buttons":
+
+        await settings_buttons(
+            update,
+            context
+        )
+
+        return True
+
+    if data == "settings_rewards":
+
+        await settings_rewards(
+            update,
+            context
+        )
+
+        return True
+
+    if data.startswith(
+        "toggle_"
+    ):
+
+        key = data.replace(
+            "toggle_",
+            "",
+            1
+        )
+
+        await toggle_feature(
+            update,
+            context,
+            key
+        )
+
+        return True
+
+    if data.startswith(
+        "rename_"
+    ):
+
+        key = data.replace(
+            "rename_",
+            "",
+            1
+        )
+
+        await rename_button(
+            update,
+            context,
+            key
+        )
+
+        return True
+
+    return False
+
+
+# =========================
+# ADMIN CALLBACK ROUTER
+# =========================
+
+async def callback_handler(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    data = query.data
+
+    if data.startswith(
+        "check_task_"
+    ):
+
+        await task_callback(
+            update,
+            context
+        )
+
+        return
+
+    if (
+        data.startswith("withdraw_")
+        or data.startswith("approve_")
+        or data.startswith("reject_")
+    ):
+
+        await withdrawal_callback(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_home":
+
+        await query.answer()
+
+        if not is_admin(
+            query.from_user.id
+        ):
+            return
+
+        await query.edit_message_text(
+            "👑 ADMIN PANEL\n\n"
+            "নিচের menu থেকে একটি option select করো:",
+            reply_markup=admin_keyboard()
+        )
+
+        return
+
+    if data == "admin_users":
+
+        await admin_user_search(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_add_points":
+
+        await admin_add_points_menu(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_remove_points":
+
+        await admin_remove_points_menu(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_withdrawals":
+
+        await withdrawal_list(
+            update,
+            context
+        )
+
+        return
+
+    if data == "admin_broadcast":
+
+        await broadcast_start(
+            update,
+            context
+        )
+
+        return
+
+    if await settings_callback(
+        update,
+        context
+    ):
+
+        return
+
+    await query.answer(
+        "❌ Unknown action",
+        show_alert=True
+    )
+
+
+# =========================
+# MAIN TEXT ROUTER
+# =========================
+
+async def main_text_router(
+    update,
+    context
+):
+
+    # Admin actions first
+    if await process_broadcast(
+        update,
+        context
+    ):
+        return
+
+    if await process_rename(
+        update,
+        context
+    ):
+        return
+
+    if await process_points_user(
+        update,
+        context
+    ):
+        return
+
+    if await admin_points_action(
+        update,
+        context
+    ):
+        return
+
+    if await process_user_management(
+        update,
+        context
+    ):
+        return
+
+    text = update.message.text
+
+    # =====================
+    # DYNAMIC BUTTON ROUTING
+    # =====================
+
+    if text == get_setting(
+        "button_earn"
+    ):
+
+        await earn_tasks(
+            update,
+            context
+        )
+
+        return
+
+    if text == get_setting(
+        "button_referral"
+    ):
+
+        await refer_earn(
+            update,
+            context
+        )
+
+        return
+
+    if text == get_setting(
+        "button_daily"
+    ):
+
+        await daily_bonus(
+            update,
+            context
+        )
+
+        return
+
+    if text == get_setting(
+        "button_balance"
+    ):
+
+        await my_balance(
+            update,
+            context
+        )
+
+        return
+
+    if text == get_setting(
+        "button_help"
+    ):
+
+        await help_menu(
+            update,
+            context
+        )
+
+        return
+
+    # Unknown text
+    await update.message.reply_text(
+        "❓ এই optionটি বুঝতে পারিনি।\n\n"
+        "নিচের menu থেকে একটি button select করো।",
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        context.error
+    )
+
+
+# =========================
+# WEB SERVER
+# =========================
+
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
+
+    def do_GET(self):
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-type",
+            "text/plain"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(
+            b"TaskMint Bot is running!"
+        )
+
+    def log_message(
+        self,
+        format,
+        *args
+    ):
+
+        return
+
+
+def web_server():
+
+    server = HTTPServer(
+        ("0.0.0.0", PORT),
+        HealthHandler
+    )
+
+    server.serve_forever()
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    if not TOKEN:
+
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
+
+    init_db()
+
+    create_default_task()
+
+    thread = threading.Thread(
+        target=web_server,
+        daemon=True
+    )
+
+    thread.start()
+
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # =====================
+    # WITHDRAW CONVERSATION
+    # =====================
+
+    withdraw_conversation = (
+        ConversationHandler(
+
+            entry_points=[
+                MessageHandler(
+                    filters.Regex(
+                        "^" +
+                        re.escape(
+                            get_setting(
+                                "button_withdraw"
+                            )
+                        ) +
+                        "$"
+                    ),
+                    withdraw_start
+                )
+            ],
+
+            states={
+
+                AMOUNT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_amount
+                    )
+                ],
+
+                METHOD: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_method
+                    )
+                ],
+
+                ACCOUNT: [
+                    MessageHandler(
+                        filters.TEXT
+                        & ~filters.COMMAND,
+                        withdraw_account
+                    )
+                ],
+            },
+
+            fallbacks=[
+                CommandHandler(
+                    "cancel",
+                    withdraw_cancel
+                )
+            ],
+
+            allow_reentry=True
+        )
+    )
+
+    # =====================
+    # HANDLERS
+    # =====================
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_command
+        )
+    )
+
+    app.add_handler(
+        withdraw_conversation
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            main_text_router
+        )
+    )
+
+    app.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot started successfully!"
+    )
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# =========================
+# START
+# =========================
+
+if __name__ == "__main__":
+    main()
