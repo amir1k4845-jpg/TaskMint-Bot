@@ -445,3 +445,540 @@ def is_admin(user_id):
         ADMIN_ID != 0
         and user_id == ADMIN_ID
 )
+# =========================
+# EARN TASKS
+# =========================
+
+def create_default_task():
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM channel_tasks
+        LIMIT 1
+        """
+    ).fetchone()
+
+    if not row:
+
+        conn.execute(
+            """
+            INSERT INTO channel_tasks(
+                title,
+                channel,
+                channel_url,
+                reward,
+                active
+            )
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                "Join AMIR 10M",
+                "@Amir10m300",
+                "https://t.me/Amir10m300",
+                setting_int(
+                    "reward_task",
+                    TASK_REWARD
+                ),
+                1
+            )
+        )
+
+        conn.commit()
+
+    conn.close()
+
+
+def get_channel_tasks():
+
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM channel_tasks
+        WHERE active=1
+        ORDER BY id ASC
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_channel_task(task_id):
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM channel_tasks
+        WHERE id=?
+        AND active=1
+        """,
+        (task_id,)
+    ).fetchone()
+
+    conn.close()
+
+    return row
+
+
+def task_done(user_id, task_key):
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM completed_tasks
+        WHERE user_id=?
+        AND task_key=?
+        """,
+        (
+            user_id,
+            task_key
+        )
+    ).fetchone()
+
+    conn.close()
+
+    return row is not None
+
+
+def save_task(user_id, task_key):
+
+    conn = db()
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO completed_tasks(
+            user_id,
+            task_key
+        )
+        VALUES(?,?)
+        """,
+        (
+            user_id,
+            task_key
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+
+async def earn_tasks(
+    update,
+    context
+):
+
+    if not feature_on("earn"):
+
+        await update.message.reply_text(
+            "⚠️ Earn Tasks feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    rows = get_channel_tasks()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "💰 EARN TASKS\n\n"
+            "😔 বর্তমানে কোনো Task available নেই।\n\n"
+            "পরে আবার চেষ্টা করো।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"📢 {row['title']} "
+                f"(+{row['reward']} Points)",
+                url=row["channel_url"]
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"✅ Check Task #{row['id']}",
+                callback_data=(
+                    f"check_task_{row['id']}"
+                )
+            )
+        ])
+
+    await update.message.reply_text(
+        "💰 EARN TASKS\n\n"
+        "📌 Task complete করার নিয়ম:\n"
+        "1️⃣ প্রথমে Channel Join করো।\n"
+        "2️⃣ Join করার পর নিচের "
+        "✅ Check button চাপো।\n\n"
+        "🎁 প্রতিটি Task একবারই reward দেবে।",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
+
+async def task_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    data = query.data
+
+    user_id = query.from_user.id
+
+    if not data.startswith(
+        "check_task_"
+    ):
+        return
+
+    try:
+
+        task_id = int(
+            data.split("_")[2]
+        )
+
+    except (
+        ValueError,
+        IndexError
+    ):
+
+        await query.answer(
+            "❌ Invalid Task",
+            show_alert=True
+        )
+
+        return
+
+    task = get_channel_task(
+        task_id
+    )
+
+    if not task:
+
+        await query.edit_message_text(
+            "❌ এই Task আর available নেই।"
+        )
+
+        return
+
+    task_key = (
+        f"channel_{task_id}"
+    )
+
+    if task_done(
+        user_id,
+        task_key
+    ):
+
+        await query.edit_message_text(
+            "⚠️ TASK ALREADY COMPLETED\n\n"
+            "এই Task তুমি আগেই complete করেছো।\n\n"
+            f"💰 Current Points: "
+            f"{points(user_id)}"
+        )
+
+        return
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=task["channel"],
+            user_id=user_id
+        )
+
+        if member.status in (
+            "member",
+            "administrator",
+            "creator"
+        ):
+
+            add_points(
+                user_id,
+                task["reward"]
+            )
+
+            save_task(
+                user_id,
+                task_key
+            )
+
+            await query.edit_message_text(
+                "🎉 TASK COMPLETED!\n\n"
+                f"✅ Reward: +{task['reward']} Points\n"
+                f"💰 Total Points: "
+                f"{points(user_id)}"
+            )
+
+        else:
+
+            await query.edit_message_text(
+                "❌ TASK NOT COMPLETED\n\n"
+                "আগে Channel-এ Join করো।\n"
+                "তারপর আবার Check করো।"
+            )
+
+    except Exception as e:
+
+        print(
+            "Task check error:",
+            e
+        )
+
+        await query.edit_message_text(
+            "⚠️ Task verify করা যাচ্ছে না।\n\n"
+            "কিছুক্ষণ পরে আবার চেষ্টা করো।"
+        )
+
+
+# =========================
+# REFERRAL
+# =========================
+
+async def refer_earn(
+    update,
+    context
+):
+
+    if not feature_on("referral"):
+
+        await update.message.reply_text(
+            "⚠️ Referral feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    user = update.effective_user
+
+    bot = await context.bot.get_me()
+
+    referral_link = (
+        f"https://t.me/{bot.username}"
+        f"?start={user.id}"
+    )
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE referred_by=?
+        AND referral_rewarded=1
+        """,
+        (user.id,)
+    ).fetchone()
+
+    conn.close()
+
+    referrals = row["total"] if row else 0
+
+    reward = setting_int(
+        "reward_referral",
+        REFERRAL_REWARD
+    )
+
+    await update.message.reply_text(
+        "👥 REFER & EARN\n\n"
+        "💰 বন্ধুদের Invite করে points earn করো!\n\n"
+        f"🎁 প্রতি successful referral: "
+        f"+{reward} Points\n"
+        f"👥 Total Referrals: {referrals}\n\n"
+        "🔗 তোমার Referral Link:\n"
+        f"{referral_link}\n\n"
+        "📢 Link টি বন্ধুদের সাথে Share করো।",
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# REFERRAL REWARD
+# =========================
+
+async def process_referral(
+    user_id
+):
+
+    conn = db()
+
+    user = conn.execute(
+        """
+        SELECT *
+        FROM users
+        WHERE user_id=?
+        """,
+        (user_id,)
+    ).fetchone()
+
+    if not user:
+
+        conn.close()
+
+        return
+
+    referrer_id = user["referred_by"]
+
+    if not referrer_id:
+
+        conn.close()
+
+        return
+
+    if user["referral_rewarded"] == 1:
+
+        conn.close()
+
+        return
+
+    if referrer_id == user_id:
+
+        conn.close()
+
+        return
+
+    referrer = conn.execute(
+        """
+        SELECT user_id
+        FROM users
+        WHERE user_id=?
+        """,
+        (referrer_id,)
+    ).fetchone()
+
+    if not referrer:
+
+        conn.close()
+
+        return
+
+    reward = setting_int(
+        "reward_referral",
+        REFERRAL_REWARD
+    )
+
+    conn.execute(
+        """
+        UPDATE users
+        SET points = points + ?
+        WHERE user_id=?
+        """,
+        (
+            reward,
+            referrer_id
+        )
+    )
+
+    conn.execute(
+        """
+        UPDATE users
+        SET referral_rewarded=1
+        WHERE user_id=?
+        """,
+        (user_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# DAILY BONUS
+# =========================
+
+async def daily_bonus(
+    update,
+    context
+):
+
+    if not feature_on("daily"):
+
+        await update.message.reply_text(
+            "⚠️ Daily Bonus feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+
+        register_user(
+            update.effective_user
+        )
+
+        user = get_user(
+            user_id
+        )
+
+    today = datetime.now().strftime(
+        "%Y-%m-%d"
+    )
+
+    if user["last_bonus"] == today:
+
+        await update.message.reply_text(
+            "🎁 DAILY BONUS\n\n"
+            "⏳ আজকের bonus তুমি already claim করেছো।\n\n"
+            "🌅 আগামীকাল আবার claim করতে পারবে।\n\n"
+            f"💰 Current Points: "
+            f"{points(user_id)}",
+            reply_markup=get_markup()
+        )
+
+        return
+
+    reward = setting_int(
+        "reward_daily",
+        DAILY_REWARD
+    )
+
+    conn = db()
+
+    conn.execute(
+        """
+        UPDATE users
+        SET points = points + ?,
+            last_bonus = ?
+        WHERE user_id=?
+        """,
+        (
+            reward,
+            today,
+            user_id
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        "🎉 DAILY BONUS CLAIMED!\n\n"
+        f"🎁 Bonus: +{reward} Points\n"
+        f"💰 Total Points: "
+        f"{points(user_id)}\n\n"
+        "⏰ আগামীকাল আবার claim করতে পারবে।",
+        reply_markup=get_markup()
+    )
