@@ -2631,3 +2631,792 @@ async def admin_callback(
         )
 
         return
+# =========================
+# REJECT WITHDRAWAL
+# =========================
+
+async def reject_withdraw_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if not is_admin(
+        query.from_user.id
+    ):
+
+        await query.answer(
+            "❌ Unauthorized",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    try:
+
+        withdrawal_id = int(
+            query.data.replace(
+                "reject_withdraw_",
+                "",
+                1
+            )
+        )
+
+    except (
+        ValueError,
+        TypeError
+    ):
+
+        return
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (
+            withdrawal_id,
+        )
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.answer(
+            "❌ Withdrawal not found.",
+            show_alert=True
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.answer(
+            "⚠️ Already processed.",
+            show_alert=True
+        )
+
+        return
+
+    # Refund points when rejected
+    conn.execute(
+        """
+        UPDATE users
+        SET points = points + ?
+        WHERE user_id=?
+        """,
+        (
+            row["amount"],
+            row["user_id"]
+        )
+    )
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='rejected'
+        WHERE id=?
+        """,
+        (
+            withdrawal_id,
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "❌ WITHDRAWAL REJECTED\n\n"
+                f"🆔 Request: #{withdrawal_id}\n"
+                f"💰 Amount: {row['amount']} Points\n\n"
+                f"💰 {row['amount']} Points "
+                "তোমার balance-এ refund করা হয়েছে।"
+            )
+        )
+
+    except Exception:
+        pass
+
+    await query.answer(
+        "❌ Withdrawal rejected and refunded.",
+        show_alert=True
+    )
+
+    await query.edit_message_text(
+        "❌ Withdrawal rejected.\n\n"
+        "💰 Points refunded to user.",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "💳 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Admin Panel",
+                    callback_data="admin_back"
+                )
+            ]
+        ])
+    )
+
+
+# =========================
+# BROADCAST
+# =========================
+
+async def broadcast_start(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+    context.user_data[
+        "admin_action"
+    ] = "broadcast"
+
+    await update.message.reply_text(
+        "📢 BROADCAST\n\n"
+        "যে message সবাইকে পাঠাতে চাও "
+        "সেটা এখন পাঠাও।\n\n"
+        "Text, emoji সব পাঠাতে পারো।\n"
+        "Cancel করতে /cancel লিখো।"
+    )
+
+
+async def do_broadcast(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return
+
+    message = update.message
+
+    conn = db()
+
+    rows = conn.execute(
+        "SELECT user_id FROM users"
+    ).fetchall()
+
+    conn.close()
+
+    total = len(rows)
+
+    success = 0
+
+    failed = 0
+
+    await update.message.reply_text(
+        "📢 Broadcast শুরু হয়েছে...\n\n"
+        f"👥 Total Users: {total}"
+    )
+
+    for row in rows:
+
+        try:
+
+            await context.bot.copy_message(
+                chat_id=row["user_id"],
+                from_chat_id=message.chat_id,
+                message_id=message.message_id
+            )
+
+            success += 1
+
+        except Exception as e:
+
+            print(
+                "Broadcast error:",
+                e
+            )
+
+            failed += 1
+
+    await update.message.reply_text(
+        "✅ BROADCAST COMPLETE\n\n"
+        f"👥 Total: {total}\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}",
+        reply_markup=get_markup()
+    )
+
+    context.user_data.clear()
+
+
+# =========================
+# ADMIN TEXT ACTION
+# =========================
+
+async def admin_text_action(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        return False
+
+    action = context.user_data.get(
+        "admin_action"
+    )
+
+    if not action:
+
+        return False
+
+    text = update.message.text.strip()
+
+
+    # =========================
+    # BROADCAST
+    # =========================
+
+    if action == "broadcast":
+
+        await do_broadcast(
+            update,
+            context
+        )
+
+        return True
+
+
+    # =========================
+    # RENAME BUTTON
+    # =========================
+
+    if action.startswith(
+        "rename_"
+    ):
+
+        key = action.replace(
+            "rename_",
+            "",
+            1
+        )
+
+        if key in (
+            "earn",
+            "referral",
+            "withdraw",
+            "daily",
+            "balance",
+            "help"
+        ):
+
+            if len(text) > 50:
+
+                await update.message.reply_text(
+                    "❌ Button name সর্বোচ্চ 50 characters হতে পারে।"
+                )
+
+                return True
+
+            if not text:
+
+                await update.message.reply_text(
+                    "❌ Empty name allowed নয়।"
+                )
+
+                return True
+
+            set_setting(
+                f"button_{key}",
+                text
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "✅ Button name updated!\n\n"
+                f"New Name: {text}",
+                reply_markup=get_markup()
+            )
+
+            return True
+
+
+    # =========================
+    # TASK REWARD
+    # =========================
+
+    if action == "reward_task":
+
+        try:
+
+            value = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if value < 0:
+
+            await update.message.reply_text(
+                "❌ Reward negative হতে পারবে না।"
+            )
+
+            return True
+
+        set_setting(
+            "reward_task",
+            value
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Task reward updated!\n\n"
+            f"📋 New Task Reward: {value}"
+        )
+
+        return True
+
+
+    # =========================
+    # REFERRAL REWARD
+    # =========================
+
+    if action == "reward_referral":
+
+        try:
+
+            value = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if value < 0:
+
+            await update.message.reply_text(
+                "❌ Reward negative হতে পারবে না।"
+            )
+
+            return True
+
+        set_setting(
+            "reward_referral",
+            value
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Referral reward updated!\n\n"
+            f"👥 New Referral Reward: {value}"
+        )
+
+        return True
+
+
+    # =========================
+    # DAILY REWARD
+    # =========================
+
+    if action == "reward_daily":
+
+        try:
+
+            value = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if value < 0:
+
+            await update.message.reply_text(
+                "❌ Reward negative হতে পারবে না।"
+            )
+
+            return True
+
+        set_setting(
+            "reward_daily",
+            value
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Daily reward updated!\n\n"
+            f"🎁 New Daily Reward: {value}"
+        )
+
+        return True
+
+
+    # =========================
+    # MIN WITHDRAW
+    # =========================
+
+    if action == "min_withdraw":
+
+        try:
+
+            value = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if value <= 0:
+
+            await update.message.reply_text(
+                "❌ Minimum withdraw 0-এর বেশি হতে হবে।"
+            )
+
+            return True
+
+        set_setting(
+            "min_withdraw",
+            value
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Minimum withdrawal updated!\n\n"
+            f"💳 New Minimum: {value} Points"
+        )
+
+        return True
+
+
+    # =========================
+    # ADD USER POINTS
+    # =========================
+
+    if action == "user_add":
+
+        target_user = context.user_data.get(
+            "target_user"
+        )
+
+        try:
+
+            amount = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if amount <= 0:
+
+            await update.message.reply_text(
+                "❌ Amount অবশ্যই positive হতে হবে।"
+            )
+
+            return True
+
+        if not target_user:
+
+            context.user_data.clear()
+
+            return True
+
+        result = admin_add_points(
+            target_user,
+            amount
+        )
+
+        context.user_data.clear()
+
+        if not result:
+
+            await update.message.reply_text(
+                "❌ User পাওয়া যায়নি।"
+            )
+
+            return True
+
+        await update.message.reply_text(
+            "✅ Points added successfully!\n\n"
+            f"👤 User ID: {target_user}\n"
+            f"💰 Added: +{amount}\n"
+            f"📊 New Balance: {points(target_user)}"
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=target_user,
+                text=(
+                    "🎉 POINTS ADDED\n\n"
+                    f"💰 Admin added +{amount} Points.\n"
+                    f"📊 New Balance: {points(target_user)}"
+                )
+            )
+
+        except Exception:
+            pass
+
+        return True
+
+
+    # =========================
+    # REMOVE USER POINTS
+    # =========================
+
+    if action == "user_remove":
+
+        target_user = context.user_data.get(
+            "target_user"
+        )
+
+        try:
+
+            amount = int(text)
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ শুধু number পাঠাও।"
+            )
+
+            return True
+
+        if amount <= 0:
+
+            await update.message.reply_text(
+                "❌ Amount অবশ্যই positive হতে হবে।"
+            )
+
+            return True
+
+        if not target_user:
+
+            context.user_data.clear()
+
+            return True
+
+        result = admin_remove_points(
+            target_user,
+            amount
+        )
+
+        context.user_data.clear()
+
+        if not result:
+
+            await update.message.reply_text(
+                "❌ User পাওয়া যায়নি।"
+            )
+
+            return True
+
+        await update.message.reply_text(
+            "✅ Points removed successfully!\n\n"
+            f"👤 User ID: {target_user}\n"
+            f"💰 Removed: -{amount}\n"
+            f"📊 New Balance: {points(target_user)}"
+        )
+
+        try:
+
+            await context.bot.send_message(
+                chat_id=target_user,
+                text=(
+                    "ℹ️ POINTS UPDATED\n\n"
+                    f"💰 Admin removed {amount} Points.\n"
+                    f"📊 New Balance: {points(target_user)}"
+                )
+            )
+
+        except Exception:
+            pass
+
+        return True
+
+
+    # =========================
+    # ADD TASK
+    # =========================
+
+    if action == "add_task":
+
+        parts = [
+            p.strip()
+            for p in text.split("|")
+        ]
+
+        if len(parts) != 4:
+
+            await update.message.reply_text(
+                "❌ Format ভুল।\n\n"
+                "@channel | "
+                "https://t.me/channel | "
+                "Title | Reward"
+            )
+
+            return True
+
+        channel = parts[0]
+
+        channel_url = parts[1]
+
+        title = parts[2]
+
+        try:
+
+            reward = int(parts[3])
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            await update.message.reply_text(
+                "❌ Reward অবশ্যই number হতে হবে।"
+            )
+
+            return True
+
+        if not channel.startswith("@"):
+
+            await update.message.reply_text(
+                "❌ Channel username অবশ্যই @ দিয়ে শুরু হবে।"
+            )
+
+            return True
+
+        if not channel_url.startswith(
+            "https://t.me/"
+        ):
+
+            await update.message.reply_text(
+                "❌ Channel URL অবশ্যই https://t.me/ দিয়ে শুরু হবে।"
+            )
+
+            return True
+
+        if not title:
+
+            await update.message.reply_text(
+                "❌ Task title দিতে হবে।"
+            )
+
+            return True
+
+        if reward <= 0:
+
+            await update.message.reply_text(
+                "❌ Reward 0-এর বেশি হতে হবে।"
+            )
+
+            return True
+
+        add_channel_task(
+            channel,
+            channel_url,
+            title,
+            reward
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ NEW TASK ADDED\n\n"
+            f"📢 Channel: {channel}\n"
+            f"📝 Title: {title}\n"
+            f"💰 Reward: +{reward}"
+        )
+
+        return True
+
+
+    return False
+
+
+# =========================
+# CANCEL ADMIN ACTION
+# =========================
+
+async def cancel_command(
+    update,
+    context
+):
+
+    if is_admin(
+        update.effective_user.id
+    ):
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "❌ Action cancelled.",
+            reply_markup=get_markup()
+        )
+
+        return True
+
+    return False
