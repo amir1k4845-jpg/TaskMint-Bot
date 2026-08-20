@@ -824,3 +824,551 @@ async def process_broadcast(update, context):
     await update.message.reply_text(f"📢 BROADCAST COMPLETE\n\n✅ Sent: {sent}\n❌ Failed: {failed}", reply_markup=get_markup())
     return True
     
+# =========================
+# OTHER ADMIN FUNCTIONS
+# =========================
+
+async def admin_user_search(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    await query.message.reply_text("👤 USER SEARCH\n\nযে User-এর তথ্য দেখতে চাও তার Telegram User ID পাঠাও।")
+    context.user_data["admin_user_search"] = True
+
+
+async def process_user_management(update, context):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("admin_user_search"):
+        return False
+
+    text = update.message.text.strip()
+    try:
+        user_id = int(text)
+    except ValueError:
+        await update.message.reply_text("❌ Valid Telegram User ID পাঠাও।")
+        return True
+
+    user = get_user(user_id)
+    if not user:
+        await update.message.reply_text("❌ এই User পাওয়া যায়নি।")
+        context.user_data.pop("admin_user_search", None)
+        return True
+
+    conn = db()
+    referral_row = conn.execute("SELECT COUNT(*) AS total FROM users WHERE referred_by=? AND referral_rewarded=1", (user_id,)).fetchone()
+    task_row = conn.execute("SELECT COUNT(*) AS total FROM completed_tasks WHERE user_id=?", (user_id,)).fetchone()
+    withdrawal_row = conn.execute("SELECT COUNT(*) AS total FROM withdrawals WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+
+    username = f"@{user['username']}" if user["username"] else "No username"
+    await update.message.reply_text(
+        f"👤 USER INFORMATION\n\n🆔 User ID: {user['user_id']}\n👤 Username: {username}\n📝 Name: {user['first_name']}\n\n"
+        f"💰 Points: {user['points']}\n👥 Referrals: {referral_row['total']}\n✅ Tasks: {task_row['total']}\n💳 Withdrawals: {withdrawal_row['total']}"
+    )
+
+    context.user_data.pop("admin_user_search", None)
+    return True
+
+
+async def admin_add_points_menu(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    context.user_data["points_action"] = "add"
+    context.user_data["points_waiting_user"] = True
+    await query.message.reply_text("➕ ADD POINTS\n\nপ্রথমে User ID পাঠাও।")
+
+
+async def admin_remove_points_menu(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+    context.user_data["points_action"] = "remove"
+    context.user_data["points_waiting_user"] = True
+    await query.message.reply_text("➖ REMOVE POINTS\n\nপ্রথমে User ID পাঠাও।")
+
+
+async def process_points_user(update, context):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("points_waiting_user"):
+        return False
+
+    try:
+        target_user = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Valid User ID পাঠাও।")
+        return True
+
+    user = get_user(target_user)
+    if not user:
+        await update.message.reply_text("❌ এই User পাওয়া যায়নি।")
+        context.user_data.pop("points_waiting_user", None)
+        context.user_data.pop("points_action", None)
+        return True
+
+    context.user_data["points_user_id"] = target_user
+    context.user_data.pop("points_waiting_user", None)
+    action = context.user_data.get("points_action")
+
+    await update.message.reply_text(f"{'➕ ADD' if action=='add' else '➖ REMOVE'} POINTS\n\n👤 User ID: {target_user}\n💰 Current Points: {user['points']}\n\nকত Points করতে চাও?")
+    context.user_data["points_waiting_amount"] = True
+    return True
+
+
+async def admin_points_action(update, context):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("points_waiting_amount"):
+        return False
+
+    try:
+        amount = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ শুধু সংখ্যা পাঠাও।")
+        return True
+
+    target_user = context.user_data.get("points_user_id")
+    action = context.user_data.get("points_action")
+
+    if action == "add":
+        add_points(target_user, amount)
+        title = "➕ POINTS ADDED"
+    else:
+        remove_points(target_user, amount)
+        title = "➖ POINTS REMOVED"
+
+    new_balance = points(target_user)
+    await update.message.reply_text(f"{title}\n\n👤 User ID: {target_user}\n💰 Amount: {amount} Points\n📊 New Balance: {new_balance} Points")
+
+    try:
+        await context.bot.send_message(chat_id=target_user, text=f"{title}\n\n💰 Amount: {amount} Points\n📊 Your Balance: {new_balance} Points")
+    except Exception:
+        pass
+
+    context.user_data.clear()
+    return True
+
+
+# =========================
+# WITHDRAWAL LIST & ACTIONS
+# =========================
+
+async def withdrawal_list(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    rows = conn.execute("SELECT * FROM withdrawals WHERE status='pending' ORDER BY id ASC LIMIT 30").fetchall()
+    conn.close()
+
+    if not rows:
+        await query.edit_message_text("💳 PENDING WITHDRAWALS\n\n✅ কোনো pending withdrawal নেই।", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_home")]]))
+        return
+
+    buttons = []
+    text = "💳 PENDING WITHDRAWALS\n\nনিচের request select করো:"
+    for row in rows:
+        text += f"\n\n🆔 #{row['id']} — {row['amount']} Points"
+        buttons.append([InlineKeyboardButton(f"💳 #{row['id']} ({row['amount']} Points)", callback_data=f"withdraw_{row['id']}")])
+
+    buttons.append([InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_home")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def withdrawal_callback(update, context):
+    query = update.callback_query
+    if not is_admin(query.from_user.id):
+        return
+
+    data = query.data
+    if data.startswith("withdraw_"):
+        await query.answer()
+        withdrawal_id = int(data.split("_")[1])
+        conn = db()
+        row = conn.execute("SELECT * FROM withdrawals WHERE id=?", (withdrawal_id,)).fetchone()
+        conn.close()
+
+        if not row:
+            await query.edit_message_text("❌ Request পাওয়া যায়নি।")
+            return
+
+        buttons = []
+        if row["status"] == "pending":
+            buttons.append([
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{withdrawal_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject_{withdrawal_id}")
+            ])
+        buttons.append([InlineKeyboardButton("🔙 Pending Withdrawals", callback_data="admin_withdrawals")])
+
+        username = f"@{row['username']}" if row["username"] else "No username"
+        await query.edit_message_text(
+            f"💳 WITHDRAWAL DETAILS\n\n🆔 Request ID: #{row['id']}\n👤 User ID: {row['user_id']}\n👤 Username: {username}\n"
+            f"💰 Amount: {row['amount']} Points\n💳 Method: {row['method']}\n📱 Account: {row['account']}\n📌 Status: {row['status']}",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    if data.startswith("approve_"):
+        withdrawal_id = int(data.split("_")[1])
+        conn = db()
+        row = conn.execute("SELECT * FROM withdrawals WHERE id=?", (withdrawal_id,)).fetchone()
+        if row and row["status"] == "pending":
+            conn.execute("UPDATE withdrawals SET status='approved' WHERE id=?", (withdrawal_id,))
+            conn.commit()
+            conn.close()
+            await query.edit_message_text(f"✅ WITHDRAWAL APPROVED\n\n🆔 Request: #{withdrawal_id}")
+            try:
+                await context.bot.send_message(chat_id=row["user_id"], text=f"🎉 WITHDRAWAL APPROVED!\n\n🆔 Request: #{withdrawal_id}\n💰 Amount: {row['amount']} Points")
+            except Exception:
+                pass
+        else:
+            conn.close()
+        return
+
+    if data.startswith("reject_"):
+        withdrawal_id = int(data.split("_")[1])
+        conn = db()
+        row = conn.execute("SELECT * FROM withdrawals WHERE id=?", (withdrawal_id,)).fetchone()
+        if row and row["status"] == "pending":
+            conn.execute("UPDATE users SET points = points + ? WHERE user_id=?", (row["amount"], row["user_id"]))
+            conn.execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (withdrawal_id,))
+            conn.commit()
+            conn.close()
+            await query.edit_message_text(f"❌ WITHDRAWAL REJECTED\n\n🆔 Request: #{withdrawal_id}\n↩️ Points returned.")
+            try:
+                await context.bot.send_message(chat_id=row["user_id"], text=f"❌ WITHDRAWAL REJECTED\n\n🆔 Request: #{withdrawal_id}\n↩️ Points ফেরত দেওয়া হয়েছে।")
+            except Exception:
+                pass
+        else:
+            conn.close()
+        return
+
+
+# =========================
+# BOT SETTINGS & CONTROLS
+# =========================
+
+def settings_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔘 Button Settings", callback_data="settings_buttons")],
+        [InlineKeyboardButton("⚙️ Reward & Withdraw Settings", callback_data="settings_rewards")],
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_home")]
+    ])
+
+
+async def admin_settings(update, context):
+    query = update.callback_query
+    await query.answer()
+    if is_admin(query.from_user.id):
+        await query.edit_message_text("⚙️ BOT SETTINGS\n\nনিচের option থেকে settings পরিবর্তন করো।", reply_markup=settings_menu_keyboard())
+
+
+async def settings_buttons_menu(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    text = "🔘 BUTTON & FEATURE SETTINGS\n\nনিচের বাটনগুলোতে ক্লিক করে ফিচার On/Off অথবা বাটনের নাম পরিবর্তন করতে পারবে:\n"
+    buttons = []
+
+    for key, name in BUTTON_KEYS:
+        status = "✅ ON" if feature_on(key) else "❌ OFF"
+        btn_text = get_setting(f"button_{key}")
+        text += f"\n• {name}: {btn_text} [{status}]"
+        
+        buttons.append([
+            InlineKeyboardButton(f"Toggle {name} ({status})", callback_data=f"toggle_feat_{key}"),
+            InlineKeyboardButton(f"✏️ Rename", callback_data=f"rename_btn_{key}")
+        ])
+
+    buttons.append([InlineKeyboardButton("🔙 Back to Settings", callback_data="admin_settings")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def settings_rewards_menu(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    task_reward = setting_int("reward_task", TASK_REWARD)
+    ref_reward = setting_int("reward_referral", REFERRAL_REWARD)
+    daily_reward = setting_int("reward_daily", DAILY_REWARD)
+    min_withdraw = setting_int("min_withdraw", MIN_WITHDRAW)
+
+    text = (
+        "⚙️ REWARD & WITHDRAW LIMIT SETTINGS\n\n"
+        f"1️⃣ Task Reward: {task_reward} Points\n"
+        f"2️⃣ Referral Reward: {ref_reward} Points\n"
+        f"3️⃣ Daily Bonus Reward: {daily_reward} Points\n"
+        f"4️⃣ Minimum Withdraw Limit: {min_withdraw} Points\n\n"
+        "যা পরিবর্তন করতে চাও তার বাটনে চাপো:"
+    )
+
+    buttons = [
+        [InlineKeyboardButton("✏️ Task Reward", callback_data="edit_rew_task")],
+        [InlineKeyboardButton("✏️ Referral Reward", callback_data="edit_rew_referral")],
+        [InlineKeyboardButton("✏️ Daily Bonus Reward", callback_data="edit_rew_daily")],
+        [InlineKeyboardButton("✏️ Minimum Withdraw Limit", callback_data="edit_lim_withdraw")],
+        [InlineKeyboardButton("🔙 Back to Settings", callback_data="admin_settings")]
+    ]
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def toggle_feature_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    feature = query.data.replace("toggle_feat_", "")
+    current_status = get_setting(f"feature_{feature}")
+    new_status = "0" if current_status == "1" else "1"
+    
+    set_setting(f"feature_{feature}", new_status)
+    await settings_buttons_menu(update, context)
+
+
+async def rename_button_start(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    key = query.data.replace("rename_btn_", "")
+    context.user_data["rename_key"] = key
+    await query.message.reply_text(f"✏️ {key.upper()} বাটনের জন্য নতুন নাম লিখে পাঠাও:\nExample: 💰 Earn Money")
+
+
+async def edit_reward_start(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    data = query.data
+    if data == "edit_rew_task":
+        context.user_data["edit_setting_key"] = "reward_task"
+        msg = "✏️ নতুন Task Reward Points পাঠাও:"
+    elif data == "edit_rew_referral":
+        context.user_data["edit_setting_key"] = "reward_referral"
+        msg = "✏️ নতুন Referral Reward Points পাঠাও:"
+    elif data == "edit_rew_daily":
+        context.user_data["edit_setting_key"] = "reward_daily"
+        msg = "✏️ নতুন Daily Bonus Reward Points পাঠাও:"
+    elif data == "edit_lim_withdraw":
+        context.user_data["edit_setting_key"] = "min_withdraw"
+        msg = "✏️ নতুন Minimum Withdraw Limit (Points) পাঠাও:"
+    else:
+        return
+
+    await query.message.reply_text(msg)
+
+
+async def process_rename_button(update, context):
+    if not is_admin(update.effective_user.id) or "rename_key" not in context.user_data:
+        return False
+
+    key = context.user_data.pop("rename_key")
+    new_name = update.message.text.strip()
+    
+    set_setting(f"button_{key}", new_name)
+    await update.message.reply_text(f"✅ {key.upper()} বাটনের নাম পরিবর্তিত হয়ে `{new_name}` হয়েছে!", reply_markup=get_markup())
+    return True
+
+
+async def process_edit_reward(update, context):
+    if not is_admin(update.effective_user.id) or "edit_setting_key" not in context.user_data:
+        return False
+
+    key = context.user_data.pop("edit_setting_key")
+    text = update.message.text.strip()
+
+    try:
+        val = int(text)
+        set_setting(key, val)
+        await update.message.reply_text(f"✅ {key.upper()} সফলভাবে আপডেট করা হয়েছে: {val}", reply_markup=get_markup())
+    except ValueError:
+        await update.message.reply_text("❌ শুধু সংখ্যা লিখে পাঠাও।")
+
+    return True
+
+
+# =========================
+# ROUTERS & HANDLERS
+# =========================
+
+async def callback_handler(update, context):
+    query = update.callback_query
+    data = query.data
+
+    if data.startswith("check_task_"):
+        await task_callback(update, context)
+        return
+
+    if data.startswith("withdraw_") or data.startswith("approve_") or data.startswith("reject_"):
+        await withdrawal_callback(update, context)
+        return
+
+    if data == "admin_home" and is_admin(query.from_user.id):
+        await query.answer()
+        await query.edit_message_text("👑 ADMIN PANEL\n\nনিচের menu থেকে একটি option select করো:", reply_markup=admin_keyboard())
+        return
+
+    if data == "admin_users":
+        await admin_user_search(update, context)
+        return
+
+    if data == "admin_add_points":
+        await admin_add_points_menu(update, context)
+        return
+
+    if data == "admin_remove_points":
+        await admin_remove_points_menu(update, context)
+        return
+
+    if data == "admin_withdrawals":
+        await withdrawal_list(update, context)
+        return
+
+    if data == "admin_broadcast":
+        await broadcast_start(update, context)
+        return
+
+    if data == "admin_manage_tasks":
+        await admin_manage_tasks(update, context)
+        return
+
+    if data.startswith("del_task_"):
+        await delete_task_callback(update, context)
+        return
+
+    if data == "add_task_start":
+        await add_task_start(update, context)
+        return
+
+    if data == "admin_settings":
+        await admin_settings(update, context)
+        return
+
+    if data == "settings_buttons":
+        await settings_buttons_menu(update, context)
+        return
+
+    if data == "settings_rewards":
+        await settings_rewards_menu(update, context)
+        return
+
+    if data.startswith("toggle_feat_"):
+        await toggle_feature_callback(update, context)
+        return
+
+    if data.startswith("rename_btn_"):
+        await rename_button_start(update, context)
+        return
+
+    if data.startswith("edit_rew_") or data.startswith("edit_lim_"):
+        await edit_reward_start(update, context)
+        return
+
+
+async def main_text_router(update, context):
+    if await process_rename_button(update, context):
+        return
+    if await process_edit_reward(update, context):
+        return
+    if await process_broadcast(update, context):
+        return
+    if await process_add_task(update, context):
+        return
+    if await process_points_user(update, context):
+        return
+    if await admin_points_action(update, context):
+        return
+    if await process_user_management(update, context):
+        return
+
+    text = update.message.text
+    if text == get_setting("button_earn"):
+        await earn_tasks(update, context)
+        return
+    if text == get_setting("button_referral"):
+        await refer_earn(update, context)
+        return
+    if text == get_setting("button_daily"):
+        await daily_bonus(update, context)
+        return
+    if text == get_setting("button_balance"):
+        await my_balance(update, context)
+        return
+    if text == get_setting("button_help"):
+        await help_menu(update, context)
+        return
+
+    await update.message.reply_text("❓ এই optionটি বুঝতে পারিনি।\n\nনিচের menu থেকে একটি button select করো।", reply_markup=get_markup())
+
+
+# =========================
+# WEB SERVER & MAIN
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"TaskMint Bot is running!")
+
+    def log_message(self, format, *args):
+        return
+
+
+def web_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.serve_forever()
+
+
+def main():
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN environment variable is missing.")
+
+    init_db()
+    create_default_task()
+
+    thread = threading.Thread(target=web_server, daemon=True)
+    thread.start()
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    withdraw_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^" + re.escape(get_setting("button_withdraw")) + "$"),
+                withdraw_start
+            )
+        ],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
+            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_method)],
+            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_account)],
+        },
+        fallbacks=[CommandHandler("cancel", withdraw_cancel)],
+        allow_reentry=True
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(withdraw_conversation)
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_text_router))
+
+    print("TaskMint Bot started successfully!")
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
+    
