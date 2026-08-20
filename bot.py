@@ -698,3 +698,464 @@ async def start(
         referrer
     )
 ``
+# =========================
+# START CONTINUED
+# =========================
+
+    await update.message.reply_text(
+        "🎉 Welcome to TaskMint Bot!\n\n"
+        "💰 Tasks করে Points earn করো।\n"
+        "👥 Friends invite করে Points earn করো।\n"
+        "🎁 Daily Bonus নাও।\n"
+        "💳 Points withdraw করো।\n\n"
+        "নিচের Menu থেকে শুরু করো 👇",
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# HELP
+# =========================
+
+async def help_cmd(
+    update,
+    context
+):
+
+    if not feature_on("help"):
+        await update.message.reply_text(
+            "⚠️ Help feature এখন বন্ধ আছে.",
+            reply_markup=get_markup()
+        )
+        return
+
+    await update.message.reply_text(
+        "ℹ️ TASKMINT HELP\n\n"
+        "/start - Bot শুরু\n"
+        "/help - Help\n"
+        "/admin - Admin Panel\n\n"
+        "💰 Earn Tasks করে Points earn করো।\n"
+        "👥 Referral করে extra Points earn করো।\n"
+        "🎁 প্রতিদিন Daily Bonus নাও।\n"
+        "💳 Minimum Points হলে Withdraw করো।"
+    )
+
+
+# =========================
+# EARN TASKS
+# =========================
+
+async def earn_tasks(
+    update,
+    context
+):
+
+    if not feature_on("earn"):
+        await update.message.reply_text(
+            "⚠️ Earn Tasks feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+        return
+
+    rows = get_channel_tasks()
+
+    if not rows:
+        await update.message.reply_text(
+            "💰 EARN TASKS\n\n"
+            "বর্তমানে কোনো Task available নেই।"
+        )
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"{row['title']} (+{row['reward']})",
+                url=row["channel_url"]
+            )
+        ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"✅ Check #{row['id']}",
+                callback_data=f"check_task_{row['id']}"
+            )
+        ])
+
+    await update.message.reply_text(
+        "💰 EARN TASKS\n\n"
+        "1️⃣ প্রথমে Channel Join করো।\n"
+        "2️⃣ তারপর Check চাপো।\n\n"
+        "একটি Task একবারই reward দেবে।",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================
+# TASK CHECK
+# =========================
+
+async def task_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user_id = query.from_user.id
+
+    if not data.startswith("check_task_"):
+        return
+
+    try:
+        task_id = int(data.split("_")[2])
+    except (ValueError, IndexError):
+        return
+
+    task = get_channel_task(task_id)
+
+    if not task:
+        await query.edit_message_text(
+            "❌ এই Task আর available নেই।"
+        )
+        return
+
+    task_key = f"channel_{task_id}"
+
+    if task_done(user_id, task_key):
+
+        await query.edit_message_text(
+            "⚠️ এই Task তুমি আগেই complete করেছো!\n\n"
+            f"💰 Points: {points(user_id)}"
+        )
+        return
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=task["channel"],
+            user_id=user_id
+        )
+
+        if member.status in (
+            "member",
+            "administrator",
+            "creator"
+        ):
+
+            add_points(
+                user_id,
+                task["reward"]
+            )
+
+            save_task(
+                user_id,
+                task_key
+            )
+
+            await query.edit_message_text(
+                "🎉 TASK COMPLETED!\n\n"
+                f"✅ +{task['reward']} Points\n"
+                f"💰 Total Points: {points(user_id)}"
+            )
+
+        else:
+
+            await query.edit_message_text(
+                "❌ তুমি এখনো Channel Join করোনি!\n\n"
+                "আগে Join করো, তারপর আবার Check করো।",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "📢 Join Channel",
+                            url=task["channel_url"]
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "🔄 Check Again",
+                            callback_data=f"check_task_{task_id}"
+                        )
+                    ]
+                ])
+            )
+
+    except Exception as e:
+
+        print(
+            "Task verification error:",
+            e
+        )
+
+        await query.edit_message_text(
+            "⚠️ Channel verification করা যাচ্ছে না।\n\n"
+            "Bot-কে ওই Channel-এর Admin করা হয়েছে "
+            "কিনা চেক করো।"
+        )
+
+
+# =========================
+# DAILY BONUS
+# =========================
+
+async def daily_bonus(
+    update,
+    context
+):
+
+    if not feature_on("daily"):
+        await update.message.reply_text(
+            "⚠️ Daily Bonus feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+        return
+
+    user_id = update.effective_user.id
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT last_bonus
+        FROM users
+        WHERE user_id=?
+        """,
+        (user_id,)
+    ).fetchone()
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    if row and row["last_bonus"] == today:
+
+        conn.close()
+
+        await update.message.reply_text(
+            "🎁 DAILY BONUS\n\n"
+            "⚠️ আজকের Bonus তুমি already নিয়েছো।\n\n"
+            "আগামীকাল আবার নিতে পারবে।"
+        )
+
+        return
+
+    conn.execute(
+        """
+        UPDATE users
+        SET points=points+?,
+            last_bonus=?
+        WHERE user_id=?
+        """,
+        (
+            setting_int("reward_daily", DAILY_REWARD),
+            today,
+            user_id
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        "🎉 DAILY BONUS RECEIVED!\n\n"
+        f"🎁 +{setting_int('reward_daily', DAILY_REWARD)} Points\n"
+        f"💰 Total: {points(user_id)}"
+    )
+
+
+# =========================
+# REFERRAL
+# =========================
+
+async def referral(
+    update,
+    context
+):
+
+    if not feature_on("referral"):
+        await update.message.reply_text(
+            "⚠️ Referral feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+        return
+
+    user_id = update.effective_user.id
+
+    conn = db()
+
+    total = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM users
+        WHERE referred_by=?
+        """,
+        (user_id,)
+    ).fetchone()[0]
+
+    conn.close()
+
+    bot_username = context.bot.username
+
+    link = (
+        f"https://t.me/"
+        f"{bot_username}"
+        f"?start={user_id}"
+    )
+
+    await update.message.reply_text(
+        "👥 REFER & EARN\n\n"
+        "বন্ধুদের invite করে Points earn করো!\n\n"
+        f"🎁 প্রতি Referral: +{setting_int('reward_referral', REFERRAL_REWARD)} Points\n"
+        f"👤 Total Referrals: {total}\n\n"
+        "🔗 তোমার Referral Link:\n"
+        f"{link}"
+    )
+
+
+# =========================
+# WITHDRAW START
+# =========================
+
+async def withdraw_start(
+    update,
+    context
+):
+
+    if not feature_on("withdraw"):
+        await update.message.reply_text(
+            "⚠️ Withdraw feature এখন বন্ধ আছে।",
+            reply_markup=get_markup()
+        )
+        return
+
+    user_id = update.effective_user.id
+    balance = points(user_id)
+
+    minimum = setting_int(
+        "min_withdraw",
+        MIN_WITHDRAW
+    )
+
+    if balance < minimum:
+
+        await update.message.reply_text(
+            "💳 WITHDRAW\n\n"
+            f"💰 Your Points: {balance}\n"
+            f"⚠️ Minimum: {minimum} Points\n\n"
+            "আরও Points earn করো।"
+        )
+
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "💳 WITHDRAW\n\n"
+        f"💰 Available: {balance} Points\n"
+        f"⚠️ Minimum: {minimum} Points\n\n"
+        "কত Points withdraw করতে চাও?\n"
+        "শুধু সংখ্যা পাঠাও।"
+    )
+
+    return AMOUNT
+
+
+# =========================
+# WITHDRAW AMOUNT
+# =========================
+
+async def withdraw_amount(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+    balance = points(user_id)
+
+    try:
+        amount = int(
+            update.message.text.strip()
+        )
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ শুধু সংখ্যা পাঠাও।\n\n"
+            "Example: 100"
+        )
+
+        return AMOUNT
+
+    minimum = setting_int(
+        "min_withdraw",
+        MIN_WITHDRAW
+    )
+
+    if amount < minimum:
+
+        await update.message.reply_text(
+            f"❌ Minimum {minimum} Points।"
+        )
+
+        return AMOUNT
+
+    if amount > balance:
+
+        await update.message.reply_text(
+            "❌ তোমার কাছে এত Points নেই!\n\n"
+            f"💰 Available: {balance}"
+        )
+
+        return AMOUNT
+
+    context.user_data["withdraw_amount"] = amount
+
+    await update.message.reply_text(
+        "💳 Payment Method নির্বাচন করো:",
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                ["💰 Binance"],
+                ["📱 bKash"],
+                ["📱 Nagad"]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    )
+
+    return METHOD
+
+
+# =========================
+# WITHDRAW METHOD
+# =========================
+
+async def withdraw_method(
+    update,
+    context
+):
+
+    method = update.message.text.strip()
+
+    if method not in (
+        "💰 Binance",
+        "📱 bKash",
+        "📱 Nagad"
+    ):
+
+        await update.message.reply_text(
+            "❌ একটি valid Payment Method নির্বাচন করো।"
+        )
+
+        return METHOD
+
+    context.user_data["withdraw_method"] = method
+
+    await update.message.reply_text(
+        "📱 এখন তোমার Payment Account পাঠাও।\n\n"
+        "উদাহরণ:\n"
+        "Binance UID / Email\n"
+        "bKash Number\n"
+        "Nagad Number"
+    )
+
+    return ACCOUNT
