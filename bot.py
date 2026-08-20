@@ -601,3 +601,226 @@ async def withdraw_cancel(update, context):
     await update.message.reply_text("❌ Withdraw cancelled।", reply_markup=get_markup())
     return ConversationHandler.END
                        
+# =========================
+# BALANCE & HELP
+# =========================
+
+async def my_balance(update, context):
+    if not feature_on("balance"):
+        await update.message.reply_text("⚠️ Balance feature এখন বন্ধ আছে।", reply_markup=get_markup())
+        return
+
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        register_user(update.effective_user)
+        user = get_user(user_id)
+
+    conn = db()
+    referral_row = conn.execute("SELECT COUNT(*) AS total FROM users WHERE referred_by=? AND referral_rewarded=1", (user_id,)).fetchone()
+    task_row = conn.execute("SELECT COUNT(*) AS total FROM completed_tasks WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+
+    referrals = referral_row["total"] if referral_row else 0
+    completed_tasks = task_row["total"] if task_row else 0
+    minimum = setting_int("min_withdraw", MIN_WITHDRAW)
+
+    await update.message.reply_text(
+        f"📊 MY BALANCE\n\n💰 Points: {user['points']}\n👥 Referrals: {referrals}\n✅ Completed Tasks: {completed_tasks}\n\n💳 Minimum Withdraw: {minimum} Points",
+        reply_markup=get_markup()
+    )
+
+
+async def help_menu(update, context):
+    if not feature_on("help"):
+        await update.message.reply_text("⚠️ Help feature এখন বন্ধ আছে।", reply_markup=get_markup())
+        return
+
+    await update.message.reply_text(
+        "ℹ️ HELP & INFORMATION\n\n"
+        "💰 Earn Tasks\n→ Channel/Task complete করে Points earn করো।\n\n"
+        "👥 Refer & Earn\n→ Referral link share করে bonus earn করো।\n\n"
+        "🎁 Daily Bonus\n→ প্রতিদিন একবার Daily Bonus claim করো।\n\n"
+        "📊 My Balance\n→ তোমার Points, Referral এবং completed task দেখো।\n\n"
+        "💳 Withdraw\n→ Minimum Points পূরণ হলে withdrawal request পাঠাও।\n\n"
+        "⚠️ কোনো সমস্যা হলে Admin-এর সাথে যোগাযোগ করো।",
+        reply_markup=get_markup()
+    )
+
+
+# =========================
+# ADMIN PANEL MAIN
+# =========================
+
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👥 Users", callback_data="admin_users"),
+            InlineKeyboardButton("💰 Add Points", callback_data="admin_add_points")
+        ],
+        [
+            InlineKeyboardButton("➖ Remove Points", callback_data="admin_remove_points"),
+            InlineKeyboardButton("💳 Withdrawals", callback_data="admin_withdrawals")
+        ],
+        [
+            InlineKeyboardButton("📢 Manage Tasks", callback_data="admin_manage_tasks"),
+            InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Bot Settings", callback_data="admin_settings")
+        ],
+    ])
+
+
+async def admin_command(update, context):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+
+    await update.message.reply_text("👑 ADMIN PANEL\n\nনিচের menu থেকে একটি option select করো:", reply_markup=admin_keyboard())
+
+
+# =========================
+# ADMIN TASK MANAGEMENT
+# =========================
+
+async def admin_manage_tasks(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    tasks = get_channel_tasks()
+    text = "📢 TASK MANAGEMENT\n\nবর্তমান সক্রিয় টাস্কসমূহ:\n"
+    buttons = []
+
+    for task in tasks:
+        text += f"\n🆔 #{task['id']} - {task['title']} (+{task['reward']} Points)"
+        buttons.append([InlineKeyboardButton(f"❌ Delete #{task['id']} - {task['title']}", callback_data=f"del_task_{task['id']}")])
+
+    buttons.append([InlineKeyboardButton("➕ Add New Task", callback_data="add_task_start")])
+    buttons.append([InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_home")])
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def delete_task_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    task_id = int(query.data.split("_")[2])
+    conn = db()
+    conn.execute("UPDATE channel_tasks SET active=0 WHERE id=?", (task_id,))
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(f"✅ Task #{task_id} মুছে ফেলা হয়েছে।")
+
+
+async def add_task_start(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    context.user_data["add_task_state"] = "title"
+    await query.message.reply_text("➕ ADD NEW TASK\n\nটাস্কের Title/নাম পাঠাও:\nExample: Join AMIR Channel")
+
+
+async def process_add_task(update, context):
+    if not is_admin(update.effective_user.id):
+        return False
+
+    state = context.user_data.get("add_task_state")
+    if not state:
+        return False
+
+    text = update.message.text.strip()
+
+    if state == "title":
+        context.user_data["new_task_title"] = text
+        context.user_data["add_task_state"] = "channel"
+        await update.message.reply_text("📢 Channel Username (বা ID) পাঠাও:\nExample: @Amir10m300")
+        return True
+
+    elif state == "channel":
+        context.user_data["new_task_channel"] = text
+        context.user_data["add_task_state"] = "url"
+        await update.message.reply_text("🔗 Channel Invite URL পাঠাও:\nExample: https://t.me/Amir10m300")
+        return True
+
+    elif state == "url":
+        context.user_data["new_task_url"] = text
+        context.user_data["add_task_state"] = "reward"
+        await update.message.reply_text("🎁 Task Reward Points পাঠাও:\nExample: 10")
+        return True
+
+    elif state == "reward":
+        try:
+            reward = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ Reward পয়েন্ট শুধু সংখ্যায় পাঠাও।")
+            return True
+
+        title = context.user_data.get("new_task_title")
+        channel = context.user_data.get("new_task_channel")
+        url = context.user_data.get("new_task_url")
+
+        conn = db()
+        conn.execute(
+            "INSERT INTO channel_tasks(title, channel, channel_url, reward, active) VALUES(?,?,?,?,1)",
+            (title, channel, url, reward)
+        )
+        conn.commit()
+        conn.close()
+
+        context.user_data.pop("add_task_state", None)
+        await update.message.reply_text("🎉 নতুন টাস্ক সফলভাবে যুক্ত করা হয়েছে!", reply_markup=get_markup())
+        return True
+
+    return False
+
+
+# =========================
+# BROADCAST
+# =========================
+
+async def broadcast_start(update, context):
+    query = update.callback_query
+    await query.answer()
+    if not is_admin(query.from_user.id):
+        return
+
+    context.user_data["broadcast"] = True
+    await query.message.reply_text("📢 BROADCAST\n\nযে message সবাইকে পাঠাতে চাও সেটা এখন পাঠাও。\n\n❌ Cancel করতে /cancel পাঠাও।")
+
+
+async def process_broadcast(update, context):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("broadcast"):
+        return False
+
+    text = update.message.text
+    if text == "/cancel":
+        context.user_data.pop("broadcast", None)
+        await update.message.reply_text("❌ Broadcast cancelled।", reply_markup=get_markup())
+        return True
+
+    conn = db()
+    users = conn.execute("SELECT user_id FROM users").fetchall()
+    conn.close()
+
+    sent, failed = 0, 0
+    for row in users:
+        try:
+            await context.bot.send_message(chat_id=row["user_id"], text=f"📢 ANNOUNCEMENT\n\n{text}")
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    context.user_data.pop("broadcast", None)
+    await update.message.reply_text(f"📢 BROADCAST COMPLETE\n\n✅ Sent: {sent}\n❌ Failed: {failed}", reply_markup=get_markup())
+    return True
+    
