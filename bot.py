@@ -162,3 +162,145 @@ def init_db():
     conn.commit()
     conn.close()
     
+# =========================
+# SETTINGS HELPERS
+# =========================
+
+def get_setting(key):
+    conn = db()
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    conn.close()
+    if row:
+        return row["value"]
+    return DEFAULT_SETTINGS.get(key, "")
+
+
+def set_setting(key, value):
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO settings(key, value) VALUES(?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (key, str(value))
+    )
+    conn.commit()
+    conn.close()
+
+
+def setting_int(key, fallback):
+    try:
+        return int(get_setting(key))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def feature_on(feature):
+    return get_setting(f"feature_{feature}") == "1"
+
+
+# =========================
+# DYNAMIC MENU
+# =========================
+
+def get_markup():
+    rows = []
+    current = []
+
+    for key in ("earn", "referral", "withdraw", "daily", "balance", "help"):
+        if feature_on(key):
+            current.append(get_setting(f"button_{key}"))
+            if len(current) == 2:
+                rows.append(current)
+                current = []
+
+    if current:
+        rows.append(current)
+
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+# =========================
+# USER FUNCTIONS
+# =========================
+
+def register_user(user, referred_by=None):
+    conn = db()
+    existing = conn.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,)).fetchone()
+
+    if not existing:
+        conn.execute(
+            "INSERT INTO users(user_id, username, first_name, referred_by) VALUES(?,?,?,?)",
+            (user.id, user.username or "", user.first_name or "", referred_by)
+        )
+    else:
+        conn.execute(
+            "UPDATE users SET username=?, first_name=? WHERE user_id=?",
+            (user.username or "", user.first_name or "", user.id)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_user(user_id):
+    conn = db()
+    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def points(user_id):
+    user = get_user(user_id)
+    return user["points"] if user else 0
+
+
+def add_points(user_id, amount):
+    conn = db()
+    conn.execute("UPDATE users SET points = points + ? WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+
+def remove_points(user_id, amount):
+    conn = db()
+    conn.execute("UPDATE users SET points = MAX(points - ?, 0) WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+
+def is_admin(user_id):
+    return ADMIN_ID != 0 and user_id == ADMIN_ID
+
+
+# =========================
+# START COMMAND
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    referred_by = None
+
+    if context.args:
+        try:
+            ref_id = int(context.args[0])
+            if ref_id != user.id:
+                referred_by = ref_id
+        except ValueError:
+            referred_by = None
+
+    register_user(user, referred_by)
+
+    if referred_by:
+        await process_referral(user.id)
+
+    await update.message.reply_text(
+        "👋 Welcome to TaskMint Bot!\n\n"
+        "💰 Complete tasks and earn points.\n"
+        "👥 Invite friends and earn referral rewards.\n"
+        "🎁 Claim your daily bonus.\n"
+        "💳 Withdraw your earned points.\n\n"
+        "👇 Select an option from the menu.",
+        reply_markup=get_markup()
+    )
+    
