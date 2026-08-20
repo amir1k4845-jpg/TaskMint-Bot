@@ -1159,3 +1159,724 @@ async def withdraw_method(
     )
 
     return ACCOUNT
+    if data == "admin_add_task":
+
+        context.user_data[
+            "admin_action"
+        ] = "add_task_channel"
+
+        await query.message.reply_text(
+            "➕ ADD NEW TASK\n\n"
+            "প্রথমে Channel Username পাঠাও।\n\n"
+            "Example:\n"
+            "@Amir10m300"
+        )
+
+        return
+
+    if data == "admin_delete_task":
+
+        rows = get_channel_tasks()
+
+        if not rows:
+
+            await query.edit_message_text(
+                "🗑 DELETE TASK\n\n"
+                "কোনো active task নেই।"
+            )
+
+            return
+
+        keyboard = []
+
+        for row in rows:
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🗑 {row['title']} (+{row['reward']})",
+                    callback_data=f"delete_task_{row['id']}"
+                )
+            ])
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "🔙 Admin Panel",
+                callback_data="admin_home"
+            )
+        ])
+
+        await query.edit_message_text(
+            "🗑 DELETE TASK\n\n"
+            "যে Task delete করতে চাও সেটিতে চাপো:",
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+
+        return
+
+    if data.startswith("delete_task_"):
+
+        try:
+            task_id = int(
+                data.replace(
+                    "delete_task_",
+                    ""
+                )
+            )
+
+        except ValueError:
+
+            await query.answer(
+                "❌ Invalid Task",
+                show_alert=True
+            )
+
+            return
+
+        task = get_channel_task(
+            task_id
+        )
+
+        if not task:
+
+            await query.answer(
+                "❌ Task পাওয়া যায়নি।",
+                show_alert=True
+            )
+
+            return
+
+        delete_channel_task(
+            task_id
+        )
+
+        await query.edit_message_text(
+            "✅ TASK DELETED!\n\n"
+            f"🗑 {task['title']}\n"
+            f"💰 Reward: {task['reward']} Points"
+        )
+
+        return
+
+
+# =========================
+# ADMIN TEXT ACTIONS
+# =========================
+
+async def process_admin_text(
+    update,
+    context
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+        return False
+
+    action = context.user_data.get(
+        "admin_action"
+    )
+
+    if not action:
+        return False
+
+    text = update.message.text.strip()
+
+    # =========================
+    # ADD POINTS
+    # =========================
+
+    if action in (
+        "add_points",
+        "remove_points"
+    ):
+
+        parts = text.split()
+
+        if len(parts) != 2:
+
+            await update.message.reply_text(
+                "❌ Format ভুল।\n\n"
+                "Example:\n"
+                "123456789 50"
+            )
+
+            return True
+
+        try:
+
+            target_user = int(
+                parts[0]
+            )
+
+            amount = int(
+                parts[1]
+            )
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ USER_ID এবং amount অবশ্যই সংখ্যা হতে হবে।"
+            )
+
+            return True
+
+        if amount <= 0:
+
+            await update.message.reply_text(
+                "❌ Amount 0-এর বেশি হতে হবে।"
+            )
+
+            return True
+
+        if action == "add_points":
+
+            success = admin_add_points(
+                target_user,
+                amount
+            )
+
+            action_text = "added"
+
+        else:
+
+            success = admin_remove_points(
+                target_user,
+                amount
+            )
+
+            action_text = "removed"
+
+        if not success:
+
+            await update.message.reply_text(
+                "❌ User পাওয়া যায়নি।"
+            )
+
+            return True
+
+        context.user_data.pop(
+            "admin_action",
+            None
+        )
+
+        await update.message.reply_text(
+            f"✅ {amount} Points {action_text} successfully!\n\n"
+            f"👤 User ID: {target_user}\n"
+            f"💰 Current Balance: {points(target_user)}"
+        )
+
+        return True
+
+    # =========================
+    # ADD TASK - CHANNEL
+    # =========================
+
+    if action == "add_task_channel":
+
+        channel = text
+
+        if not channel.startswith("@"):
+
+            await update.message.reply_text(
+                "❌ Channel username অবশ্যই @ দিয়ে শুরু হবে।\n\n"
+                "Example:\n"
+                "@Amir10m300"
+            )
+
+            return True
+
+        context.user_data[
+            "new_task_channel"
+        ] = channel
+
+        context.user_data[
+            "admin_action"
+        ] = "add_task_link"
+
+        await update.message.reply_text(
+            "🔗 এখন Channel-এর invite/link পাঠাও।\n\n"
+            "Example:\n"
+            "https://t.me/Amir10m300"
+        )
+
+        return True
+
+    # =========================
+    # ADD TASK - LINK
+    # =========================
+
+    if action == "add_task_link":
+
+        link = text
+
+        if not (
+            link.startswith("https://t.me/")
+            or link.startswith("http://t.me/")
+        ):
+
+            await update.message.reply_text(
+                "❌ Valid Telegram link পাঠাও।\n\n"
+                "Example:\n"
+                "https://t.me/Amir10m300"
+            )
+
+            return True
+
+        context.user_data[
+            "new_task_link"
+        ] = link
+
+        context.user_data[
+            "admin_action"
+        ] = "add_task_title"
+
+        await update.message.reply_text(
+            "📝 এখন Task-এর Title পাঠাও।\n\n"
+            "Example:\n"
+            "📢 Join Our Channel"
+        )
+
+        return True
+
+    # =========================
+    # ADD TASK - TITLE
+    # =========================
+
+    if action == "add_task_title":
+
+        if not text:
+
+            await update.message.reply_text(
+                "❌ Title empty হতে পারবে না।"
+            )
+
+            return True
+
+        context.user_data[
+            "new_task_title"
+        ] = text
+
+        context.user_data[
+            "admin_action"
+        ] = "add_task_reward"
+
+        await update.message.reply_text(
+            "💰 এখন এই Task-এর Reward পাঠাও।\n\n"
+            "Example:\n"
+            "10"
+        )
+
+        return True
+
+    # =========================
+    # ADD TASK - REWARD
+    # =========================
+
+    if action == "add_task_reward":
+
+        try:
+
+            reward = int(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Reward অবশ্যই সংখ্যা হতে হবে।\n\n"
+                "Example: 10"
+            )
+
+            return True
+
+        if reward <= 0:
+
+            await update.message.reply_text(
+                "❌ Reward 0-এর বেশি হতে হবে।"
+            )
+
+            return True
+
+        channel = context.user_data.get(
+            "new_task_channel"
+        )
+
+        link = context.user_data.get(
+            "new_task_link"
+        )
+
+        title = context.user_data.get(
+            "new_task_title"
+        )
+
+        if not all([
+            channel,
+            link,
+            title
+        ]):
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Task data missing হয়েছে। "
+                "আবার Add Task করো।"
+            )
+
+            return True
+
+        add_channel_task(
+            channel,
+            link,
+            title,
+            reward
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "🎉 TASK ADDED SUCCESSFULLY!\n\n"
+            f"📢 Channel: {channel}\n"
+            f"📝 Title: {title}\n"
+            f"💰 Reward: {reward} Points\n"
+            f"🔗 Link: {link}"
+        )
+
+        return True
+
+    return False
+
+
+# =========================
+# ADMIN WITHDRAW MANAGEMENT
+# =========================
+
+def pending_withdrawals():
+
+    conn = db()
+
+    rows = conn.execute("""
+    SELECT *
+    FROM withdrawals
+    WHERE status='pending'
+    ORDER BY id ASC
+    """).fetchall()
+
+    conn.close()
+
+    return rows
+
+
+async def show_pending_withdrawals(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    rows = pending_withdrawals()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "💳 PENDING WITHDRAWALS\n\n"
+            "✅ কোনো pending withdrawal নেই।",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Admin Panel",
+                        callback_data="admin_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    keyboard = []
+
+    for row in rows:
+
+        keyboard.append([
+            InlineKeyboardButton(
+                f"#{row['id']} • "
+                f"{row['amount']} Points • "
+                f"{row['method']}",
+                callback_data=f"withdraw_view_{row['id']}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 Admin Panel",
+            callback_data="admin_home"
+        )
+    ])
+
+    await query.edit_message_text(
+        "💳 PENDING WITHDRAWALS\n\n"
+        "একটি request নির্বাচন করো:",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+async def view_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    conn.close()
+
+    if not row:
+
+        await query.edit_message_text(
+            "❌ Withdrawal request পাওয়া যায়নি।"
+        )
+
+        return
+
+    status = row["status"]
+
+    keyboard = []
+
+    if status == "pending":
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "✅ Approve",
+                callback_data=f"withdraw_approve_{row['id']}"
+            ),
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=f"withdraw_reject_{row['id']}"
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔙 Pending Withdrawals",
+            callback_data="admin_withdrawals"
+        )
+    ])
+
+    await query.edit_message_text(
+        "💳 WITHDRAWAL REQUEST\n\n"
+        f"🆔 Request ID: #{row['id']}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"👤 Username: @{row['username']}\n"
+        f"💰 Amount: {row['amount']} Points\n"
+        f"💳 Method: {row['method']}\n"
+        f"📱 Account: {row['account']}\n"
+        f"📌 Status: {status}",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+async def approve_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.answer(
+            "❌ Request পাওয়া যায়নি।",
+            show_alert=True
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.answer(
+            "⚠️ এই request already processed।",
+            show_alert=True
+        )
+
+        return
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='approved'
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "✅ WITHDRAW APPROVED!\n\n"
+                f"🆔 Request ID: #{row['id']}\n"
+                f"💰 Amount: {row['amount']} Points\n"
+                f"💳 Method: {row['method']}\n"
+                f"📱 Account: {row['account']}\n\n"
+                "Admin তোমার withdrawal approve করেছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Withdraw approval notification error:",
+            e
+        )
+
+    await query.edit_message_text(
+        "✅ WITHDRAW APPROVED!\n\n"
+        f"🆔 Request: #{row['id']}\n"
+        f"👤 User: {row['user_id']}\n"
+        f"💰 Amount: {row['amount']} Points\n"
+        f"📌 Status: approved",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔙 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ]
+        ])
+    )
+
+
+async def reject_withdrawal(
+    update,
+    context,
+    withdrawal_id
+):
+
+    query = update.callback_query
+
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT *
+        FROM withdrawals
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    ).fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.answer(
+            "❌ Request পাওয়া যায়নি।",
+            show_alert=True
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.answer(
+            "⚠️ এই request already processed।",
+            show_alert=True
+        )
+
+        return
+
+    conn.execute(
+        """
+        UPDATE withdrawals
+        SET status='rejected'
+        WHERE id=?
+        """,
+        (withdrawal_id,)
+    )
+
+    # Return the points to the user.
+    conn.execute(
+        """
+        UPDATE users
+        SET points = points + ?
+        WHERE user_id=?
+        """,
+        (
+            row["amount"],
+            row["user_id"]
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    try:
+
+        await context.bot.send_message(
+            chat_id=row["user_id"],
+            text=(
+                "❌ WITHDRAW REJECTED!\n\n"
+                f"🆔 Request ID: #{row['id']}\n"
+                f"💰 Returned: {row['amount']} Points\n\n"
+                "তোমার Points আবার Balance-এ যোগ করা হয়েছে।"
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Withdraw rejection notification error:",
+            e
+        )
+
+    await query.edit_message_text(
+        "❌ WITHDRAW REJECTED!\n\n"
+        f"🆔 Request: #{row['id']}\n"
+        f"👤 User: {row['user_id']}\n"
+        f"💰 Returned: {row['amount']} Points\n"
+        f"📌 Status: rejected",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔙 Pending Withdrawals",
+                    callback_data="admin_withdrawals"
+                )
+            ]
+        ])
+        )
