@@ -267,3 +267,136 @@ async def task_callback(update, context):
         print("Task check error:", e)
         await query.edit_message_text("⚠️ Task verify করা যাচ্ছে না।")
     
+async def refer_earn(update, context):
+    if not feature_on("referral"):
+        await update.message.reply_text("⚠️ Referral feature এখন বন্ধ আছে।", reply_markup=get_markup())
+        return
+
+    user = update.effective_user
+    bot = await context.bot.get_me()
+    referral_link = f"https://t.me/{bot.username}?start={user.id}"
+    referrals = users_col.count_documents({"referred_by": user.id, "referral_rewarded": 1})
+    reward = setting_int("reward_referral", REFERRAL_REWARD)
+
+    await update.message.reply_text(
+        f"👥 REFER & EARN\n\n🎁 প্রতি successful referral: +{reward} Points\n👥 Total Referrals: {referrals}\n\n🔗 Link:\n{referral_link}",
+        reply_markup=get_markup()
+    )
+
+async def process_referral(user_id):
+    user = get_user(user_id)
+    if not user or not user.get("referred_by") or user.get("referral_rewarded") == 1 or user.get("referred_by") == user_id:
+        return
+
+    referrer_id = user["referred_by"]
+    reward = setting_int("reward_referral", REFERRAL_REWARD)
+    add_points(referrer_id, reward)
+    users_col.update_one({"user_id": user_id}, {"$set": {"referral_rewarded": 1}})
+
+async def daily_bonus(update, context):
+    if not feature_on("daily"):
+        await update.message.reply_text("⚠️ Daily Bonus feature এখন বন্ধ আছে।", reply_markup=get_markup())
+        return
+
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        register_user(update.effective_user)
+        user = get_user(user_id)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    if user.get("last_bonus") == today:
+        await update.message.reply_text(f"🎁 DAILY BONUS\n\n⏳ আজকের bonus ক্লেইম করেছ।\n💰 Points: {points(user_id)}", reply_markup=get_markup())
+        return
+
+    reward = setting_int("reward_daily", DAILY_REWARD)
+    add_points(user_id, reward)
+    users_col.update_one({"user_id": user_id}, {"$set": {"last_bonus": today}})
+    await update.message.reply_text(f"🎉 DAILY BONUS CLAIMED!\n\n🎁 +{reward} Points\n💰 Total Points: {points(user_id)}", reply_markup=get_markup())
+
+# =========================
+# WITHDRAW SYSTEM
+# =========================
+
+async def withdraw_start(update, context):
+    if not feature_on("withdraw"):
+        await update.message.reply_text("⚠️ Withdraw feature বন্ধ।", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    user_id = update.effective_user.id
+    balance = points(user_id)
+    minimum = setting_int("min_withdraw", MIN_WITHDRAW)
+
+    if balance < minimum:
+        await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance}\n📌 Minimum: {minimum}\n❌ পর্যাপ্ত ব্যালেন্স নেই।", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance}\n📌 Minimum: {minimum}\n\nকত Points withdraw করতে চাও?")
+    return AMOUNT
+
+async def withdraw_amount(update, context):
+    user_id = update.effective_user.id
+    try:
+        amount = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ শুধু সংখ্যায় Amount পাঠাও।")
+        return AMOUNT
+
+    minimum = setting_int("min_withdraw", MIN_WITHDRAW)
+    balance = points(user_id)
+
+    if amount < minimum or amount > balance:
+        await update.message.reply_text("❌ ইনভ্যালিড Amount। আবার পাঠাও।")
+        return AMOUNT
+
+    context.user_data["withdraw_amount"] = amount
+    await update.message.reply_text("💳 Payment Method পাঠাও (Bkash/Nagad/Binance):")
+    return METHOD
+
+async def withdraw_method(update, context):
+    context.user_data["withdraw_method"] = update.message.text.strip()
+    await update.message.reply_text("📱 Payment Account Number/ID পাঠাও:")
+    return ACCOUNT
+
+async def withdraw_account(update, context):
+    account = update.message.text.strip()
+    user = update.effective_user
+    amount = context.user_data.get("withdraw_amount")
+    method = context.user_data.get("withdraw_method")
+
+    if not amount or not method or amount > points(user.id):
+        await update.message.reply_text("❌ Session expired.", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    remove_points(user.id, amount)
+    w_id = withdrawals_col.count_documents({}) + 1
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    withdrawals_col.insert_one({
+        "req_id": w_id,
+        "user_id": user.id,
+        "username": user.username or "",
+        "amount": amount,
+        "method": method,
+        "account": account,
+        "status": "pending",
+        "created_at": now
+    })
+
+    await update.message.reply_text(f"✅ WITHDRAWAL REQUEST SENT!\n\n🆔 Request: #{w_id}\n💰 Amount: {amount}\n💳 Method: {method}\n📱 Account: {account}", reply_markup=get_markup())
+    
+    if ADMIN_ID:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔔 NEW WITHDRAWAL #{w_id}\n👤 User ID: {user.id}\n💰 Amount: {amount}\n💳 Method: {method}\n📱 Account: {account}")
+        except Exception:
+            pass
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def withdraw_cancel(update, context):
+    context.user_data.clear()
+    await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
+    return ConversationHandler.END
+    
