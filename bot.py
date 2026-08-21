@@ -400,3 +400,68 @@ async def withdraw_cancel(update, context):
     await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
     return ConversationHandler.END
     
+async def my_balance(update, context):
+    if not feature_on("balance"):
+        await update.message.reply_text("⚠️ Balance feature বন্ধ।", reply_markup=get_markup())
+        return
+
+    user_id = update.effective_user.id
+    user = get_user(user_id) or {}
+    referrals = users_col.count_documents({"referred_by": user_id, "referral_rewarded": 1})
+    completed_tasks = completed_tasks_col.count_documents({"user_id": user_id})
+
+    await update.message.reply_text(
+        f"📊 MY BALANCE\n\n💰 Points: {user.get('points', 0)}\n👥 Referrals: {referrals}\n✅ Completed Tasks: {completed_tasks}",
+        reply_markup=get_markup()
+    )
+
+async def help_menu(update, context):
+    await update.message.reply_text("ℹ️ HELP & INFORMATION\n\nবটের যেকোনো সমস্যায় অ্যাডমিনের সাথে যোগাযোগ করুন।", reply_markup=get_markup())
+
+# =========================
+# SERVER & MAIN
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"TaskMint Bot is running on MongoDB!")
+
+def web_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.serve_forever()
+
+def main():
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN missing.")
+
+    init_db()
+    create_default_task()
+
+    threading.Thread(target=web_server, daemon=True).start()
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    withdraw_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^" + re.escape(get_setting("button_withdraw")) + "$"), withdraw_start)],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
+            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_method)],
+            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_account)],
+        },
+        fallbacks=[CommandHandler("cancel", withdraw_cancel)],
+        allow_reentry=True
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(withdraw_conv)
+    app.add_handler(CallbackQueryHandler(task_callback, pattern="^check_task_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: None))
+
+    print("TaskMint Bot started with MongoDB!")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
+    
