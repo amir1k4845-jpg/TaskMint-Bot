@@ -1,9 +1,10 @@
 import os
-import threading
 import re
 import asyncio
+import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pymongo
 
 from telegram import (
@@ -22,27 +23,55 @@ from telegram.ext import (
     filters,
 )
 
-# =========================
+
+# =========================================================
 # CONFIG
-# =========================
+# =========================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI", "YOUR_MONGODB_URI_HERE")
+
+MONGO_URI = os.getenv("MONGO_URI")
+
 PORT = int(os.getenv("PORT", "10000"))
+
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7003609983"))
 
+OFFICIAL_CHANNEL = "@TaskMint_v1"
+OFFICIAL_CHANNEL_URL = "https://t.me/TaskMint_v1"
+
+# POL rewards
 TASK_REWARD = 10
 REFERRAL_REWARD = 20
 DAILY_REWARD = 10
 MIN_WITHDRAW = 100
 
-AMOUNT, METHOD, ACCOUNT = range(3)
 
-# =========================
-# MONGODB DATABASE SETUP
-# =========================
+# =========================================================
+# CONVERSATION STATES
+# =========================================================
 
-client = pymongo.MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=True)
+(
+    AMOUNT,
+    METHOD,
+    ACCOUNT,
+) = range(3)
+
+
+# =========================================================
+# MONGODB
+# =========================================================
+
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI environment variable is missing.")
+
+
+client = pymongo.MongoClient(
+    MONGO_URI,
+    tls=True,
+    tlsAllowInvalidCertificates=True,
+    serverSelectionTimeoutMS=10000,
+)
+
 db = client["taskmint_bot_db"]
 
 users_col = db["users"]
@@ -50,437 +79,807 @@ completed_tasks_col = db["completed_tasks"]
 withdrawals_col = db["withdrawals"]
 channel_tasks_col = db["channel_tasks"]
 settings_col = db["settings"]
+transactions_col = db["transactions"]
+
+
+# =========================================================
+# DEFAULT SETTINGS
+# =========================================================
 
 DEFAULT_SETTINGS = {
     "button_earn": "💰 Earn Tasks",
     "button_referral": "👥 Refer & Earn",
-    "button_withdraw": "💳 Withdraw",
+    "button_withdraw": "💳 Withdraw POL",
     "button_daily": "🎁 Daily Bonus",
     "button_balance": "📊 My Balance",
     "button_help": "ℹ️ Help",
+
     "feature_earn": "1",
     "feature_referral": "1",
     "feature_withdraw": "1",
     "feature_daily": "1",
     "feature_balance": "1",
     "feature_help": "1",
-    "reward_task": "10",
-    "reward_referral": "20",
-    "reward_daily": "10",
-    "min_withdraw": "100",
+
+    "reward_task": str(TASK_REWARD),
+    "reward_referral": str(REFERRAL_REWARD),
+    "reward_daily": str(DAILY_REWARD),
+    "min_withdraw": str(MIN_WITHDRAW),
 }
+
 
 BUTTON_KEYS = [
     ("earn", "Earn Tasks"),
     ("referral", "Refer & Earn"),
-    ("withdraw", "Withdraw"),
+    ("withdraw", "Withdraw POL"),
     ("daily", "Daily Bonus"),
     ("balance", "My Balance"),
     ("help", "Help"),
 ]
 
+
+# =========================================================
+# DATABASE INITIALIZATION
+# =========================================================
+
 def init_db():
+    """
+    Initialize settings and MongoDB indexes.
+    """
+
     for key, value in DEFAULT_SETTINGS.items():
-        if not settings_col.find_one({"key": key}):
-            settings_col.insert_one({"key": key, "value": value})
 
-def get_setting(key):
-    row = settings_col.find_one({"key": key})
-    return row["value"] if row else DEFAULT_SETTINGS.get(key, "")
-
-def set_setting(key, value):
-    settings_col.update_one({"key": key}, {"$set": {"value": str(value)}}, upsert=True)
-
-def setting_int(key, fallback):
-    try:
-        return int(get_setting(key))
-    except (TypeError, ValueError):
-        return fallback
-
-def feature_on(feature):
-    return get_setting(f"feature_{feature}") == "1"
-    
-# =========================
-# DYNAMIC MENU & USER HELPERS
-# =========================
-
-def get_markup():
-    rows = []
-    current = []
-    for key in ("earn", "referral", "withdraw", "daily", "balance", "help"):
-        if feature_on(key):
-            current.append(get_setting(f"button_{key}"))
-            if len(current) == 2:
-                rows.append(current)
-                current = []
-    if current:
-        rows.append(current)
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
-
-def register_user(user, referred_by=None):
-    existing = users_col.find_one({"user_id": user.id})
-    if not existing:
-        users_col.insert_one({
-            "user_id": user.id,
-            "username": user.username or "",
-            "first_name": user.first_name or "",
-            "points": 0,
-            "referred_by": referred_by,
-            "referral_rewarded": 0,
-            "last_bonus": ""
-        })
-    else:
-        users_col.update_one(
-            {"user_id": user.id},
-            {"$set": {"username": user.username or "", "first_name": user.first_name or ""}}
+        settings_col.update_one(
+            {"key": key},
+            {
+                "$setOnInsert": {
+                    "key": key,
+                    "value": value,
+                }
+            },
+            upsert=True,
         )
 
-def get_user(user_id):
-    return users_col.find_one({"user_id": user_id})
+    # Unique user ID
+    try:
+        users_col.create_index(
+            [("user_id", pymongo.ASCENDING)],
+            unique=True,
+        )
+    except Exception:
+        pass
 
-def points(user_id):
-    user = get_user(user_id)
-    return user["points"] if user else 0
+    # Prevent duplicate task completion
+    try:
+        completed_tasks_col.create_index(
+            [
+                ("user_id", pymongo.ASCENDING),
+                ("task_key", pymongo.ASCENDING),
+            ],
+            unique=True,
+        )
+    except Exception:
+        pass
 
-def add_points(user_id, amount):
-    users_col.update_one({"user_id": user_id}, {"$inc": {"points": amount}})
+    # Withdrawal request lookup
+    try:
+        withdrawals_col.create_index(
+            [("req_id", pymongo.ASCENDING)],
+            unique=True,
+        )
+    except Exception:
+        pass
 
-def remove_points(user_id, amount):
-    user = get_user(user_id)
-    if user:
-        new_p = max(user["points"] - amount, 0)
-        users_col.update_one({"user_id": user_id}, {"$set": {"points": new_p}})
+    try:
+        withdrawals_col.create_index(
+            [("user_id", pymongo.ASCENDING)]
+        )
+    except Exception:
+        pass
+
+    try:
+        transactions_col.create_index(
+            [("user_id", pymongo.ASCENDING)]
+        )
+    except Exception:
+        pass
+
+
+# =========================================================
+# SETTINGS HELPERS
+# =========================================================
+
+def get_setting(key):
+
+    row = settings_col.find_one(
+        {"key": key}
+    )
+
+    if row:
+        return row.get(
+            "value",
+            DEFAULT_SETTINGS.get(key, "")
+        )
+
+    return DEFAULT_SETTINGS.get(key, "")
+
+
+def set_setting(key, value):
+
+    settings_col.update_one(
+        {"key": key},
+        {
+            "$set": {
+                "value": str(value)
+            }
+        },
+        upsert=True,
+    )
+
+
+def setting_int(key, fallback):
+
+    try:
+        return int(get_setting(key))
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return fallback
+
+
+def feature_on(feature):
+
+    return (
+        get_setting(
+            f"feature_{feature}"
+        ) == "1"
+    )
+
+
+# =========================================================
+# USER MENU
+# =========================================================
+
+def get_markup():
+
+    rows = []
+    current = []
+
+    for key in (
+        "earn",
+        "referral",
+        "withdraw",
+        "daily",
+        "balance",
+        "help",
+    ):
+
+        if feature_on(key):
+
+            current.append(
+                get_setting(
+                    f"button_{key}"
+                )
+            )
+
+            if len(current) == 2:
+
+                rows.append(current)
+                current = []
+
+    if current:
+        rows.append(current)
+
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+    )
+
+
+# =========================================================
+# ADMIN MENU
+# =========================================================
+
+def get_admin_markup():
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "👥 Users",
+                callback_data="admin_users"
+            ),
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Withdrawals",
+                callback_data="admin_withdrawals"
+            ),
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "➕ Add POL",
+                callback_data="admin_add_pol"
+            ),
+            InlineKeyboardButton(
+                "➖ Remove POL",
+                callback_data="admin_remove_pol"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🚫 Ban User",
+                callback_data="admin_ban"
+            ),
+            InlineKeyboardButton(
+                "✅ Unban User",
+                callback_data="admin_unban"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "📋 Tasks",
+                callback_data="admin_tasks"
+            ),
+            InlineKeyboardButton(
+                "⚙️ Settings",
+                callback_data="admin_settings"
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================================================
+# ADMIN CHECK
+# =========================================================
 
 def is_admin(user_id):
-    return ADMIN_ID != 0 and user_id == ADMIN_ID
 
-# =========================
-# COMMANDS & FEATURES
-# =========================
+    return (
+        ADMIN_ID != 0
+        and user_id == ADMIN_ID
+    )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# =========================================================
+# USER REGISTRATION
+# =========================================================
+
+def register_user(
+    user,
+    referred_by=None,
+):
+
+    existing = users_col.find_one(
+        {"user_id": user.id}
+    )
+
+    if not existing:
+
+        users_col.insert_one(
+            {
+                "user_id": user.id,
+                "username": user.username or "",
+                "first_name": user.first_name or "",
+                "points": 0,
+                "referred_by": referred_by,
+                "referral_rewarded": 0,
+                "last_bonus": "",
+                "banned": 0,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+    else:
+
+        users_col.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                }
+            },
+        )
+
+
+# =========================================================
+# USER HELPERS
+# =========================================================
+
+def get_user(user_id):
+
+    return users_col.find_one(
+        {"user_id": user_id}
+    )
+
+
+def points(user_id):
+
+    user = get_user(user_id)
+
+    if not user:
+        return 0
+
+    return int(
+        user.get("points", 0)
+    )
+
+
+def is_banned(user_id):
+
+    user = get_user(user_id)
+
+    if not user:
+        return False
+
+    return (
+        user.get("banned", 0) == 1
+    )
+
+
+# =========================================================
+# TRANSACTION HISTORY
+# =========================================================
+
+def add_transaction(
+    user_id,
+    amount,
+    transaction_type,
+    description="",
+):
+
+    transactions_col.insert_one(
+        {
+            "user_id": user_id,
+            "amount": amount,
+            "type": transaction_type,
+            "description": description,
+            "created_at": datetime.utcnow(),
+        }
+    )
+
+
+# =========================================================
+# ATOMIC BALANCE OPERATIONS
+# =========================================================
+
+def add_points(
+    user_id,
+    amount,
+    transaction_type="credit",
+    description="",
+):
+
+    if amount <= 0:
+        return False
+
+    result = users_col.update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {
+                "points": amount
+            }
+        },
+    )
+
+    if result.modified_count:
+
+        add_transaction(
+            user_id,
+            amount,
+            transaction_type,
+            description,
+        )
+
+        return True
+
+    return False
+
+
+def remove_points(
+    user_id,
+    amount,
+    transaction_type="debit",
+    description="",
+):
+
+    if amount <= 0:
+        return False
+
+    result = users_col.update_one(
+        {
+            "user_id": user_id,
+            "points": {
+                "$gte": amount
+            },
+        },
+        {
+            "$inc": {
+                "points": -amount
+            }
+        },
+    )
+
+    if result.modified_count:
+
+        add_transaction(
+            user_id,
+            -amount,
+            transaction_type,
+            description,
+        )
+
+        return True
+
+    return False
+
+
+# =========================================================
+# /START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
     user = update.effective_user
+
     referred_by = None
+
     if context.args:
+
         try:
-            ref_id = int(context.args[0])
-            if ref_id != user.id:
+
+            ref_id = int(
+                context.args[0]
+            )
+
+            if (
+                ref_id != user.id
+                and get_user(ref_id)
+            ):
                 referred_by = ref_id
+
         except ValueError:
+
             referred_by = None
 
-    register_user(user, referred_by)
-    if referred_by:
-        await process_referral(user.id)
+    existing = get_user(
+        user.id
+    )
+
+    register_user(
+        user,
+        referred_by
+        if not existing
+        else None,
+    )
+
+    if referred_by and not existing:
+
+        await process_referral(
+            user.id
+        )
+
+    if is_banned(user.id):
+
+        await update.message.reply_text(
+            "🚫 Your account is currently banned."
+        )
+        return
 
     await update.message.reply_text(
         "👋 Welcome to TaskMint Bot!\n\n"
-        "💰 Complete tasks and earn points.\n"
-        "👥 Invite friends and earn referral rewards.\n"
+        "💰 Complete tasks and earn POL.\n"
+        "👥 Invite friends and earn POL rewards.\n"
         "🎁 Claim your daily bonus.\n"
-        "💳 Withdraw your earned points.\n\n"
+        "💳 Withdraw your POL rewards.\n\n"
+        "📢 Official Channel:\n"
+        f"{OFFICIAL_CHANNEL_URL}\n\n"
         "👇 Select an option from the menu.",
-        reply_markup=get_markup()
+        reply_markup=get_markup(),
     )
+
+
+# =========================================================
+# CREATE DEFAULT OFFICIAL TASK
+# =========================================================
 
 def create_default_task():
-    if channel_tasks_col.count_documents({}) == 0:
-        channel_tasks_col.insert_one({
-            "task_id": 1,
-            "title": "Join Official Channel",
-            "channel": "@Telegram",
-            "channel_url": "https://t.me/Telegram",
-            "reward": setting_int("reward_task", TASK_REWARD),
-            "active": 1
-        })
 
-def get_channel_tasks():
-    return list(channel_tasks_col.find({"active": 1}))
-
-def get_channel_task(task_id):
-    return channel_tasks_col.find_one({"task_id": task_id, "active": 1})
-
-def task_done(user_id, task_key):
-    return completed_tasks_col.find_one({"user_id": user_id, "task_key": task_key}) is not None
-
-def save_task(user_id, task_key):
-    completed_tasks_col.update_one(
-        {"user_id": user_id, "task_key": task_key},
-        {"$set": {"user_id": user_id, "task_key": task_key}},
-        upsert=True
+    existing = channel_tasks_col.find_one(
+        {"task_id": 1}
     )
 
-async def earn_tasks(update, context):
+    if not existing:
+
+        channel_tasks_col.insert_one(
+            {
+                "task_id": 1,
+                "title": "Join Official Channel",
+                "channel": OFFICIAL_CHANNEL,
+                "channel_url": OFFICIAL_CHANNEL_URL,
+                "reward": setting_int(
+                    "reward_task",
+                    TASK_REWARD,
+                ),
+                "active": 1,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+
+# =========================================================
+# TASK HELPERS
+# =========================================================
+
+def get_channel_tasks():
+
+    return list(
+        channel_tasks_col.find(
+            {"active": 1}
+        ).sort(
+            "task_id",
+            pymongo.ASCENDING,
+        )
+    )
+
+
+def get_channel_task(task_id):
+
+    return channel_tasks_col.find_one(
+        {
+            "task_id": task_id,
+            "active": 1,
+        }
+    )
+
+
+def task_done(
+    user_id,
+    task_key,
+):
+
+    return (
+        completed_tasks_col.find_one(
+            {
+                "user_id": user_id,
+                "task_key": task_key,
+            }
+        )
+        is not None
+    )
+
+
+def save_task(
+    user_id,
+    task_key,
+):
+
+    completed_tasks_col.update_one(
+        {
+            "user_id": user_id,
+            "task_key": task_key,
+        },
+        {
+            "$set": {
+                "user_id": user_id,
+                "task_key": task_key,
+                "completed_at": datetime.utcnow(),
+            }
+        },
+        upsert=True,
+    )
+
+
+# =========================================================
+# EARN TASKS
+# =========================================================
+
+async def earn_tasks(
+    update,
+    context,
+):
+
+    if is_banned(
+        update.effective_user.id
+    ):
+        await update.message.reply_text(
+            "🚫 Your account is banned."
+        )
+        return
+
     if not feature_on("earn"):
-        await update.message.reply_text("⚠️ Earn Tasks feature এখন বন্ধ আছে।", reply_markup=get_markup())
+
+        await update.message.reply_text(
+            "⚠️ Earn Tasks is currently disabled.",
+            reply_markup=get_markup(),
+        )
         return
 
     rows = get_channel_tasks()
+
     if not rows:
-        await update.message.reply_text("💰 EARN TASKS\n\n😔 বর্তমানে কোনো Task available নেই।", reply_markup=get_markup())
+
+        await update.message.reply_text(
+            "💰 EARN TASKS\n\n"
+            "There are currently no available tasks.",
+            reply_markup=get_markup(),
+        )
         return
 
     buttons = []
+
     for row in rows:
-        t_id = row["task_id"]
-        buttons.append([InlineKeyboardButton(f"📢 {row['title']} (+{row['reward']} Points)", url=row["channel_url"])])
-        buttons.append([InlineKeyboardButton(f"✅ Check Task #{t_id}", callback_data=f"check_task_{t_id}")])
+
+        task_id = row["task_id"]
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"📢 {row['title']} "
+                    f"(+{row['reward']} POL)",
+                    url=row["channel_url"],
+                )
+            ]
+        )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ Check Task #{task_id}",
+                    callback_data=f"check_task_{task_id}",
+                )
+            ]
+        )
 
     await update.message.reply_text(
-        "💰 EARN TASKS\n\n📌 Task complete করার নিয়ম:\n1️⃣ প্রথমে Channel Join করো।\n2️⃣ Join করার পর নিচের ✅ Check button চাপো।",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        "💰 EARN TASKS\n\n"
+        "📌 How to complete a task:\n"
+        "1. Join the required channel.\n"
+        "2. Return here and press Check Task.\n"
+        "3. Receive your POL reward.",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
     )
 
-async def task_callback(update, context):
+
+# =========================================================
+# TASK CALLBACK
+# =========================================================
+
+async def task_callback(
+    update,
+    context,
+):
+
     query = update.callback_query
+
     await query.answer()
-    data = query.data
+
     user_id = query.from_user.id
 
-    if not data.startswith("check_task_"):
+    if is_banned(user_id):
+
+        await query.edit_message_text(
+            "🚫 Your account is banned."
+        )
+        return
+
+    data = query.data
+
+    if not data.startswith(
+        "check_task_"
+    ):
         return
 
     try:
-        task_id = int(data.split("_")[2])
-    except (ValueError, IndexError):
-        await query.answer("❌ Invalid Task", show_alert=True)
+
+        task_id = int(
+            data.split("_")[2]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await query.answer(
+            "Invalid task.",
+            show_alert=True,
+        )
         return
 
-    task = get_channel_task(task_id)
+    task = get_channel_task(
+        task_id
+    )
+
     if not task:
-        await query.edit_message_text("❌ এই Task আর available নেই।")
+
+        await query.edit_message_text(
+            "❌ This task is no longer available."
+        )
         return
 
     task_key = f"channel_{task_id}"
-    if task_done(user_id, task_key):
-        await query.edit_message_text(f"⚠️ TASK ALREADY COMPLETED\n\n💰 Current Points: {points(user_id)}")
+
+    if task_done(
+        user_id,
+        task_key,
+    ):
+
+        await query.edit_message_text(
+            "⚠️ TASK ALREADY COMPLETED\n\n"
+            f"💰 Current Balance: "
+            f"{points(user_id)} POL"
+        )
         return
 
     try:
-        member = await context.bot.get_chat_member(chat_id=task["channel"], user_id=user_id)
-        if member.status in ("member", "administrator", "creator"):
-            add_points(user_id, task["reward"])
-            save_task(user_id, task_key)
-            await query.edit_message_text(f"🎉 TASK COMPLETED!\n\n✅ Reward: +{task['reward']} Points\n💰 Total Points: {points(user_id)}")
+
+        member = await context.bot.get_chat_member(
+            chat_id=task["channel"],
+            user_id=user_id,
+        )
+
+        if member.status in (
+            "member",
+            "administrator",
+            "creator",
+        ):
+
+            reward = int(
+                task["reward"]
+            )
+
+            add_points(
+                user_id,
+                reward,
+                "task_reward",
+                f"Completed task #{task_id}",
+            )
+
+            save_task(
+                user_id,
+                task_key,
+            )
+
+            await query.edit_message_text(
+                "🎉 TASK COMPLETED!\n\n"
+                f"✅ Reward: +{reward} POL\n"
+                f"💰 Total Balance: "
+                f"{points(user_id)} POL"
+            )
+
         else:
-            await query.edit_message_text("❌ TASK NOT COMPLETED\n\nআগে Channel-এ Join করো।")
+
+            await query.edit_message_text(
+                "❌ TASK NOT COMPLETED\n\n"
+                "Please join the channel first."
+            )
+
     except Exception as e:
-        print("Task check error:", e)
-        await query.edit_message_text("⚠️ Task verify করা যাচ্ছে না।")
-async def refer_earn(update, context):
-    if not feature_on("referral"):
-        await update.message.reply_text("⚠️ Referral feature এখন বন্ধ আছে।", reply_markup=get_markup())
-        return
 
-    user = update.effective_user
-    bot = await context.bot.get_me()
-    referral_link = f"https://t.me/{bot.username}?start={user.id}"
-    referrals = users_col.count_documents({"referred_by": user.id, "referral_rewarded": 1})
-    reward = setting_int("reward_referral", REFERRAL_REWARD)
+        print(
+            "Task verification error:",
+            e,
+        )
 
-    await update.message.reply_text(
-        f"👥 REFER & EARN\n\n🎁 প্রতি successful referral: +{reward} Points\n👥 Total Referrals: {referrals}\n\n🔗 Link:\n{referral_link}",
-        reply_markup=get_markup()
+        await query.edit_message_text(
+            "⚠️ Task verification failed.\n\n"
+            "Please try again later."
     )
-
-async def process_referral(user_id):
-    user = get_user(user_id)
-    if not user or not user.get("referred_by") or user.get("referral_rewarded") == 1 or user.get("referred_by") == user_id:
-        return
-
-    referrer_id = user["referred_by"]
-    reward = setting_int("reward_referral", REFERRAL_REWARD)
-    add_points(referrer_id, reward)
-    users_col.update_one({"user_id": user_id}, {"$set": {"referral_rewarded": 1}})
-
-async def daily_bonus(update, context):
-    if not feature_on("daily"):
-        await update.message.reply_text("⚠️ Daily Bonus feature এখন বন্ধ আছে।", reply_markup=get_markup())
-        return
-
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if not user:
-        register_user(update.effective_user)
-        user = get_user(user_id)
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    if user.get("last_bonus") == today:
-        await update.message.reply_text(f"🎁 DAILY BONUS\n\n⏳ আজকের bonus ক্লেইম করেছ।\n💰 Points: {points(user_id)}", reply_markup=get_markup())
-        return
-
-    reward = setting_int("reward_daily", DAILY_REWARD)
-    add_points(user_id, reward)
-    users_col.update_one({"user_id": user_id}, {"$set": {"last_bonus": today}})
-    await update.message.reply_text(f"🎉 DAILY BONUS CLAIMED!\n\n🎁 +{reward} Points\n💰 Total Points: {points(user_id)}", reply_markup=get_markup())
-
-# =========================
-# WITHDRAW SYSTEM
-# =========================
-
-async def withdraw_start(update, context):
-    if not feature_on("withdraw"):
-        await update.message.reply_text("⚠️ Withdraw feature বন্ধ।", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    context.user_data.clear()
-    user_id = update.effective_user.id
-    balance = points(user_id)
-    minimum = setting_int("min_withdraw", MIN_WITHDRAW)
-
-    if balance < minimum:
-        await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance}\n📌 Minimum: {minimum}\n❌ পর্যাপ্ত ব্যালেন্স নেই।", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance}\n📌 Minimum: {minimum}\n\nকত Points withdraw করতে চাও?")
-    return AMOUNT
-
-async def withdraw_amount(update, context):
-    user_id = update.effective_user.id
-    try:
-        amount = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ শুধু সংখ্যায় Amount পাঠাও।")
-        return AMOUNT
-
-    minimum = setting_int("min_withdraw", MIN_WITHDRAW)
-    balance = points(user_id)
-
-    if amount < minimum or amount > balance:
-        await update.message.reply_text("❌ ইনভ্যালিড Amount। আবার পাঠাও।")
-        return AMOUNT
-
-    context.user_data["withdraw_amount"] = amount
-    await update.message.reply_text("💳 Payment Method পাঠাও (Bkash/Nagad/Binance):")
-    return METHOD
-
-async def withdraw_method(update, context):
-    context.user_data["withdraw_method"] = update.message.text.strip()
-    await update.message.reply_text("📱 Payment Account Number/ID পাঠাও:")
-    return ACCOUNT
-
-async def withdraw_account(update, context):
-    account = update.message.text.strip()
-    user = update.effective_user
-    amount = context.user_data.get("withdraw_amount")
-    method = context.user_data.get("withdraw_method")
-
-    if not amount or not method or amount > points(user.id):
-        await update.message.reply_text("❌ Session expired.", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    remove_points(user.id, amount)
-    w_id = withdrawals_col.count_documents({}) + 1
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    withdrawals_col.insert_one({
-        "req_id": w_id,
-        "user_id": user.id,
-        "username": user.username or "",
-        "amount": amount,
-        "method": method,
-        "account": account,
-        "status": "pending",
-        "created_at": now
-    })
-
-    await update.message.reply_text(f"✅ WITHDRAWAL REQUEST SENT!\n\n🆔 Request: #{w_id}\n💰 Amount: {amount}\n💳 Method: {method}\n📱 Account: {account}", reply_markup=get_markup())
-    
-    if ADMIN_ID:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🔔 NEW WITHDRAWAL #{w_id}\n👤 User ID: {user.id}\n💰 Amount: {amount}\n💳 Method: {method}\n📱 Account: {account}")
-        except Exception:
-            pass
-
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def withdraw_cancel(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
-    return ConversationHandler.END
-    
-async def my_balance(update, context):
-    if not feature_on("balance"):
-        await update.message.reply_text("⚠️ Balance feature বন্ধ।", reply_markup=get_markup())
-        return
-
-    user_id = update.effective_user.id
-    user = get_user(user_id) or {}
-    referrals = users_col.count_documents({"referred_by": user_id, "referral_rewarded": 1})
-    completed_tasks = completed_tasks_col.count_documents({"user_id": user_id})
-
-    await update.message.reply_text(
-        f"📊 MY BALANCE\n\n💰 Points: {user.get('points', 0)}\n👥 Referrals: {referrals}\n✅ Completed Tasks: {completed_tasks}",
-        reply_markup=get_markup()
-    )
-
-async def help_menu(update, context):
-    await update.message.reply_text("ℹ️ HELP & INFORMATION\n\nবটের যেকোনো সমস্যায় অ্যাডমিনের সাথে যোগাযোগ করুন।", reply_markup=get_markup())
-
-# =========================
-# MENU BUTTON ROUTER (FIXED)
-# =========================
-
-async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == get_setting("button_earn"):
-        await earn_tasks(update, context)
-    elif text == get_setting("button_referral"):
-        await refer_earn(update, context)
-    elif text == get_setting("button_daily"):
-        await daily_bonus(update, context)
-    elif text == get_setting("button_balance"):
-        await my_balance(update, context)
-    elif text == get_setting("button_help"):
-        await help_menu(update, context)
-
-# =========================
-# SERVER & MAIN
-# =========================
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"TaskMint Bot is running on MongoDB!")
-
-def web_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    server.serve_forever()
-
-def main():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN missing.")
-
-    init_db()
-    create_default_task()
-
-    threading.Thread(target=web_server, daemon=True).start()
-
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    withdraw_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^" + re.escape(get_setting("button_withdraw")) + "$"), withdraw_start)],
-        states={
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
-            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_method)],
-            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_account)],
-        },
-        fallbacks=[CommandHandler("cancel", withdraw_cancel)],
-        allow_reentry=True
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(withdraw_conv)
-    app.add_handler(CallbackQueryHandler(task_callback, pattern="^check_task_"))
-    
-    # বাটন প্রসেস করার হ্যান্ডলার যুক্ত করা হলো
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_buttons))
-
-    print("TaskMint Bot started with MongoDB!")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
-    
