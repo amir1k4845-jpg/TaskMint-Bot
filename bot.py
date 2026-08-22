@@ -301,3 +301,203 @@ async def my_balance(update, context):
 async def help_menu(update, context):
     await update.message.reply_text("ℹ️ HELP & INFO\n\nContact the administrator for support.", reply_markup=get_markup())
             
+# =========================
+# WITHDRAWAL SYSTEM
+# =========================
+
+async def withdraw_start(update, context):
+    context.user_data.clear()
+    user_id = update.effective_user.id
+    balance = await get_balance(user_id)
+    minimum = setting_float("min_withdraw", MIN_WITHDRAW)
+
+    if balance < minimum:
+        await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance:.2f} POL\n📌 Minimum: {minimum:.2f} POL\n❌ Insufficient balance.", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance:.2f} POL\n📌 Minimum: {minimum:.2f} POL\n\nHow many POL do you want to withdraw? (Numbers only)")
+    return AMOUNT
+
+async def withdraw_amount(update, context):
+    text = update.message.text.strip()
+    if text in get_menu_buttons_list():
+        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    try:
+        amount = float(text)
+    except ValueError:
+        await update.message.reply_text("❌ Valid number required.")
+        return AMOUNT
+
+    balance = await get_balance(update.effective_user.id)
+    minimum = setting_float("min_withdraw", MIN_WITHDRAW)
+
+    if amount < minimum or amount > balance:
+        await update.message.reply_text(f"❌ Amount must be between {minimum:.2f} and {balance:.2f}.")
+        return AMOUNT
+
+    context.user_data["withdraw_amount"] = amount
+    await update.message.reply_text("💳 Send withdrawal method (e.g., Polygon Network, Binance):")
+    return METHOD
+
+async def withdraw_method(update, context):
+    text = update.message.text.strip()
+    if text in get_menu_buttons_list():
+        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    context.user_data["withdraw_method"] = text
+    await update.message.reply_text("📱 Send your Wallet Address:")
+    return ACCOUNT
+
+async def withdraw_account(update, context):
+    account = update.message.text.strip()
+    if account in get_menu_buttons_list():
+        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
+        return ConversationHandler.END
+
+    user = update.effective_user
+    amount = context.user_data.get("withdraw_amount")
+    method = context.user_data.get("withdraw_method")
+
+    await remove_balance(user.id, amount)
+    w_id = await withdrawals_col.count_documents({}) + 1
+
+    await withdrawals_col.insert_one({
+        "req_id": w_id, "user_id": user.id, "amount": amount, 
+        "method": method, "account": account, "status": "pending"
+    })
+
+    await update.message.reply_text(f"✅ REQUEST SENT!\n\n🆔 #{w_id}\n💰 Amount: {amount:.2f} POL\n📱 Address: {account}", reply_markup=get_markup())
+    
+    if ADMIN_ID:
+        keyboard = [
+            [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{w_id}"),
+             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{w_id}")]
+        ]
+        await context.bot.send_message(
+            chat_id=ADMIN_ID, 
+            text=f"🔔 NEW WITHDRAWAL #{w_id}\n👤 User ID: {user.id}\n💰 Amount: {amount:.2f} POL\n💳 Method: {method}\n📱 Address: {account}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def withdraw_cancel(update, context):
+    context.user_data.clear()
+    await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
+    return ConversationHandler.END
+
+# =========================
+# ADMIN CONTROLS
+# =========================
+
+async def admin_action_callback(update, context):
+    query = update.callback_query
+    data = query.data
+    
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("You are not an admin!", show_alert=True)
+        return
+
+    action, req_id_str = data.split("_")[0], data.split("_")[1]
+    req_id = int(req_id_str)
+    
+    req = await withdrawals_col.find_one({"req_id": req_id})
+    if not req or req["status"] != "pending":
+        await query.answer("Request already processed or not found.", show_alert=True)
+        return
+
+    if action == "approve":
+        await withdrawals_col.update_one({"req_id": req_id}, {"$set": {"status": "approved"}})
+        await query.edit_message_text(f"{query.message.text}\n\n✅ **APPROVED**")
+        try:
+            await context.bot.send_message(chat_id=req["user_id"], text=f"🎉 Your withdrawal of {req['amount']:.2f} POL has been APPROVED and sent!")
+        except:
+            pass
+
+    elif action == "reject":
+        await withdrawals_col.update_one({"req_id": req_id}, {"$set": {"status": "rejected"}})
+        await add_balance(req["user_id"], req["amount"]) # Refund
+        await query.edit_message_text(f"{query.message.text}\n\n❌ **REJECTED (Refunded)**")
+        try:
+            await context.bot.send_message(chat_id=req["user_id"], text=f"❌ Your withdrawal of {req['amount']:.2f} POL was REJECTED. The amount has been refunded to your balance.")
+        except:
+            pass
+
+async def admin_broadcast(update, context):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    message = " ".join(context.args)
+    if not message:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    users = await users_col.find({}).to_list(length=None)
+    sent = 0
+    for u in users:
+        try:
+            await context.bot.send_message(chat_id=u["user_id"], text=f"📢 BROADCAST:\n\n{message}")
+            sent += 1
+            await asyncio.sleep(0.05) # Prevent flood wait
+        except:
+            pass
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
+
+# =========================
+# ROUTER & MAIN
+# =========================
+
+async def handle_menu_buttons(update, context):
+    text = update.message.text
+    if text == get_setting("button_earn"): await earn_tasks(update, context)
+    elif text == get_setting("button_referral"): await refer_earn(update, context)
+    elif text == get_setting("button_daily"): await daily_bonus(update, context)
+    elif text == get_setting("button_balance"): await my_balance(update, context)
+    elif text == get_setting("button_help"): await help_menu(update, context)
+    elif text == get_setting("button_withdraw"):
+        await update.message.reply_text("To withdraw, please click the Withdraw button again to start securely.")
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+
+def web_server():
+    HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever()
+
+async def post_init(application):
+    await load_settings()
+    await create_default_task()
+
+def main():
+    threading.Thread(target=web_server, daemon=True).start()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+
+    withdraw_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^" + re.escape(DEFAULT_SETTINGS["button_withdraw"]) + "$"), withdraw_start)],
+        states={
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
+            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_method)],
+            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_account)],
+        },
+        fallbacks=[CommandHandler("cancel", withdraw_cancel)],
+        allow_reentry=True
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", admin_broadcast))
+    app.add_handler(withdraw_conv)
+    app.add_handler(CallbackQueryHandler(task_callback, pattern="^check_task_"))
+    app.add_handler(CallbackQueryHandler(admin_action_callback, pattern="^(approve|reject)_"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_buttons))
+
+    print("Bot started successfully!")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
+            
