@@ -11,6 +11,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -42,7 +43,7 @@ DATABASE_NAME = "taskmint"
 
 
 # =========================================================
-# CONFIG CHECK
+# CHECK ENVIRONMENT
 # =========================================================
 
 if not BOT_TOKEN:
@@ -115,7 +116,7 @@ mongo_client = MongoClient(
     serverSelectionTimeoutMS=10000
 )
 
-db = mongo_client[DATABASE_NAME]
+db = mongo_client["taskmint"]
 
 users_collection = db["users"]
 
@@ -148,7 +149,9 @@ def setup_database():
         unique=True
     )
 
-    print("MongoDB database ready.")
+    print(
+        "MongoDB database ready."
+    )
 
 
 # =========================================================
@@ -157,7 +160,9 @@ def setup_database():
 
 def create_or_update_user(user):
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     users_collection.update_one(
         {
@@ -235,7 +240,7 @@ def main_menu(user_id):
 
 
 # =========================================================
-# CHANNEL JOIN KEYBOARD
+# CHANNEL BUTTONS
 # =========================================================
 
 def join_keyboard():
@@ -250,8 +255,8 @@ def join_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    "✅ Verify Join",
-                    callback_data="verify_join"
+                    "✅ Done",
+                    callback_data="check_join"
                 )
             ]
         ]
@@ -259,7 +264,7 @@ def join_keyboard():
 
 
 # =========================================================
-# CHANNEL CHECK
+# CHANNEL MEMBERSHIP CHECK
 # =========================================================
 
 async def is_channel_member(
@@ -283,7 +288,7 @@ async def is_channel_member(
     except Exception as error:
 
         print(
-            "Channel check error:",
+            "Channel membership error:",
             error
         )
 
@@ -303,8 +308,11 @@ async def start(
 
     create_or_update_user(user)
 
-    # IMPORTANT:
-    # Do NOT show menu before channel verification.
+    # Remove any old menu first.
+    await update.message.reply_text(
+        "Checking...",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
     is_member = await is_channel_member(
         context.bot,
@@ -315,12 +323,11 @@ async def start(
 
         await update.message.reply_text(
             (
-                "🔐 <b>Join Required</b>\n\n"
-                "Welcome to TaskMint!\n\n"
-                "To continue, you must join "
-                "our official channel first.\n\n"
-                "After joining, click "
-                "<b>Verify Join</b>."
+                "👋 <b>Hi dear user!</b>\n\n"
+                "Please join our official channel "
+                "then the bot will become active for you.\n\n"
+                "After joining, press "
+                "<b>Done</b>."
             ),
             reply_markup=join_keyboard(),
             parse_mode="HTML"
@@ -328,27 +335,27 @@ async def start(
 
         return
 
-    # Only verified users reach here.
-
-    await show_main_menu(
-        update,
+    # Already joined
+    await send_main_menu(
+        context.bot,
         user.id
     )
 
 
 # =========================================================
-# MAIN MENU
+# SEND MAIN MENU
 # =========================================================
 
-async def show_main_menu(
-    update,
+async def send_main_menu(
+    bot,
     user_id
 ):
 
-    await update.message.reply_text(
-        (
-            "🏠 <b>TaskMint Main Menu</b>\n\n"
-            "Choose an option below."
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "🎉 <b>Welcome to TaskMint!</b>\n\n"
+            "Choose an option from the menu."
         ),
         reply_markup=main_menu(user_id),
         parse_mode="HTML"
@@ -356,10 +363,10 @@ async def show_main_menu(
 
 
 # =========================================================
-# VERIFY JOIN
+# DONE BUTTON
 # =========================================================
 
-async def verify_join(
+async def check_join(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -383,27 +390,21 @@ async def verify_join(
         return
 
     await query.answer(
-        "✅ Join verified!"
+        "✅ Verified successfully!"
     )
 
     await query.edit_message_text(
         (
-            "✅ <b>Verification Successful!</b>\n\n"
-            "Welcome to TaskMint."
+            "✅ <b>Done!</b>\n\n"
+            "Your membership has been verified.\n"
+            "The bot is now active."
         ),
         parse_mode="HTML"
     )
 
-    # Send menu ONLY after successful verification.
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=(
-            "🏠 <b>TaskMint Main Menu</b>\n\n"
-            "Choose an option below."
-        ),
-        reply_markup=main_menu(user_id),
-        parse_mode="HTML"
+    await send_main_menu(
+        context.bot,
+        user_id
     )
 
 
@@ -420,8 +421,7 @@ async def tasks_menu(
         (
             "🎯 <b>Tasks</b>\n\n"
             "No tasks are available right now.\n\n"
-            "Tasks will be added from "
-            "the Admin Panel."
+            "Tasks will be added by the admin."
         ),
         parse_mode="HTML"
     )
@@ -472,7 +472,7 @@ async def refer_menu(
 
 
 # =========================================================
-# WITHDRAW MENU
+# WITHDRAW
 # =========================================================
 
 async def withdraw_menu(
@@ -514,8 +514,8 @@ async def withdraw_menu(
             f"<b>{balance:.6f} POL</b>\n"
             f"📌 Minimum Withdrawal: "
             f"<b>{MIN_WITHDRAW:.6f} POL</b>\n\n"
-            "Please enter the amount of "
-            "<b>POL</b> you want to withdraw."
+            "Enter the amount of POL "
+            "you want to withdraw."
         ),
         parse_mode="HTML"
     )
@@ -537,10 +537,6 @@ async def process_withdraw(
     step = context.user_data.get(
         "withdraw_step"
     )
-
-    # -----------------------------------------------------
-    # AMOUNT
-    # -----------------------------------------------------
 
     if step == "amount":
 
@@ -603,10 +599,6 @@ async def process_withdraw(
 
         return
 
-    # -----------------------------------------------------
-    # WALLET
-    # -----------------------------------------------------
-
     if step == "wallet":
 
         wallet = text
@@ -649,18 +641,18 @@ async def process_withdraw(
 
             return
 
+        now = datetime.now(
+            timezone.utc
+        )
+
         withdrawal = {
             "user_id": user_id,
             "amount": amount,
             "token": TOKEN_NAME,
             "wallet": wallet,
             "status": "pending",
-            "created_at": datetime.now(
-                timezone.utc
-            ),
-            "updated_at": datetime.now(
-                timezone.utc
-            )
+            "created_at": now,
+            "updated_at": now
         }
 
         try:
@@ -674,7 +666,7 @@ async def process_withdraw(
         except PyMongoError as error:
 
             print(
-                "Withdrawal error:",
+                "Withdrawal database error:",
                 error
             )
 
@@ -707,7 +699,8 @@ async def process_withdraw(
         await update.message.reply_text(
             (
                 "✅ <b>Withdrawal Submitted</b>\n\n"
-                f"🆔 ID: <code>{withdrawal_id}</code>\n"
+                f"🆔 ID: "
+                f"<code>{withdrawal_id}</code>\n"
                 f"💰 Amount: "
                 f"<b>{amount:.6f} POL</b>\n"
                 f"👛 Wallet: "
@@ -741,284 +734,4 @@ async def process_withdraw(
             print(
                 "Admin notification error:",
                 error
-            )
-
-        return
-# =========================================================
-# ADMIN PANEL
-# =========================================================
-
-async def admin_panel(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    user_id = update.effective_user.id
-
-    if user_id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ You are not authorized."
-        )
-
-        return
-
-    total_users = users_collection.count_documents({})
-
-    total_tasks = tasks_collection.count_documents({})
-
-    pending_withdrawals = (
-        withdrawals_collection.count_documents(
-            {
-                "status": "pending"
-            }
-        )
     )
-
-    await update.message.reply_text(
-        (
-            "👑 <b>Admin Panel</b>\n\n"
-            f"👥 Total Users: "
-            f"<b>{total_users}</b>\n"
-            f"🎯 Total Tasks: "
-            f"<b>{total_tasks}</b>\n"
-            f"💳 Pending Withdrawals: "
-            f"<b>{pending_withdrawals}</b>\n\n"
-            "⚙️ More admin features "
-            "will be added next."
-        ),
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# MENU HANDLER
-# =========================================================
-
-async def menu_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    user_id = update.effective_user.id
-
-    text = update.message.text
-
-    # -----------------------------------------------------
-    # SECURITY:
-    # USER MUST BE IN CHANNEL
-    # -----------------------------------------------------
-
-    is_member = await is_channel_member(
-        context.bot,
-        user_id
-    )
-
-    if not is_member:
-
-        await send_join_message(
-            update
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # TASKS
-    # -----------------------------------------------------
-
-    if text == "🎯 Tasks":
-
-        await tasks_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # WITHDRAW
-    # -----------------------------------------------------
-
-    if text == "💳 Withdraw":
-
-        await withdraw_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # REFER
-    # -----------------------------------------------------
-
-    if text == "👥 Refer":
-
-        await refer_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ADMIN PANEL
-    # -----------------------------------------------------
-
-    if text == "👑 Admin Panel":
-
-        await admin_panel(
-            update,
-            context
-        )
-
-        return
-
-
-# =========================================================
-# TEXT HANDLER
-# =========================================================
-
-async def text_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    # Withdrawal conversation
-    if context.user_data.get(
-        "withdraw_step"
-    ):
-
-        await process_withdraw(
-            update,
-            context
-        )
-
-        return
-
-    await menu_handler(
-        update,
-        context
-    )
-
-
-# =========================================================
-# ERROR HANDLER
-# =========================================================
-
-async def error_handler(
-    update,
-    context
-):
-
-    print(
-        "Telegram error:",
-        repr(context.error)
-    )
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-def main():
-
-    # -----------------------------------------------------
-    # RENDER HEALTH SERVER
-    # -----------------------------------------------------
-
-    health_thread = threading.Thread(
-        target=start_health_server,
-        daemon=True
-    )
-
-    health_thread.start()
-
-    # -----------------------------------------------------
-    # MONGODB CONNECTION
-    # -----------------------------------------------------
-
-    print(
-        "Connecting to MongoDB..."
-    )
-
-    try:
-
-        mongo_client.admin.command(
-            "ping"
-        )
-
-        print(
-            "MongoDB connected successfully."
-        )
-
-    except Exception as error:
-
-        print(
-            "MongoDB connection failed:",
-            error
-        )
-
-        raise
-
-    setup_database()
-
-    # -----------------------------------------------------
-    # TELEGRAM BOT
-    # -----------------------------------------------------
-
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-
-    # /start
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    # Verify Join
-    application.add_handler(
-        CallbackQueryHandler(
-            verify_join,
-            pattern="^verify_join$"
-        )
-    )
-
-    # Text messages
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_handler
-        )
-    )
-
-    # Error handler
-    application.add_error_handler(
-        error_handler
-    )
-
-    print(
-        "TaskMint Bot is running..."
-    )
-
-    # -----------------------------------------------------
-    # START POLLING
-    # -----------------------------------------------------
-
-    application.run_polling(
-        drop_pending_updates=True
-    )
-
-
-# =========================================================
-# RUN
-# =========================================================
-
-if __name__ == "__main__":
-
-    main()
