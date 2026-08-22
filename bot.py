@@ -557,3 +557,333 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             print("Admin notification:", error)
     
+# =========================================================
+# ADMIN PANEL, PENDING SUBMISSIONS & SLOTS MANAGEMENT
+# =========================================================
+
+def admin_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"),
+            InlineKeyboardButton("🎯 Manage Tasks", callback_data="admin_tasks")
+        ],
+        [
+            InlineKeyboardButton("💳 Withdrawals", callback_data="admin_withdrawals"),
+            InlineKeyboardButton("📥 Submissions", callback_data="admin_submissions")
+        ],
+        [
+            InlineKeyboardButton("👥 Users", callback_data="admin_users"),
+            InlineKeyboardButton("💰 Balance Management", callback_data="admin_balance")
+        ],
+        [
+            InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
+            InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")
+        ]
+    ])
+
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(
+        ("👑 <b>Admin Panel</b>\n\nSelect an option:"),
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("❌ Unauthorized.", show_alert=True)
+        return
+
+    await query.answer()
+    data = query.data
+
+    if data == "admin_home":
+        await query.edit_message_text(
+            "👑 <b>Admin Panel</b>\n\nSelect an option:",
+            reply_markup=admin_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if data == "admin_stats":
+        total_users = users_collection.count_documents({})
+        total_tasks = tasks_collection.count_documents({})
+        pending_w = withdrawals_collection.count_documents({"status": "pending"})
+        pending_s = submissions_collection.count_documents({"status": "pending"})
+
+        await query.edit_message_text(
+            (
+                "📊 <b>Statistics</b>\n\n"
+                f"👥 Total Users: <b>{total_users}</b>\n"
+                f"🎯 Total Tasks: <b>{total_tasks}</b>\n"
+                f"🕐 Pending Withdrawals: <b>{pending_w}</b>\n"
+                f"📥 Pending Submissions: <b>{pending_s}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_home")]]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data == "admin_tasks":
+        active = tasks_collection.count_documents({"active": True})
+        inactive = tasks_collection.count_documents({"active": False})
+        await query.edit_message_text(
+            (
+                "🎯 <b>Manage Tasks & Slots</b>\n\n"
+                f"🟢 Active: <b>{active}</b> | 🔴 Inactive: <b>{inactive}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add Task (with Slots)", callback_data="task_add")],
+                [InlineKeyboardButton("📋 View/Delete Tasks", callback_data="task_list_admin")],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_home")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data == "task_add":
+        context.user_data["admin_action"] = "task_add_step1"
+        await query.edit_message_text("➕ <b>Add New Task</b>\n\nSend task title:", parse_mode="HTML")
+        return
+
+    if data == "task_list_admin":
+        tasks = list(tasks_collection.find({}))
+        if not tasks:
+            await query.edit_message_text("No tasks found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")]]))
+            return
+        buttons = []
+        for t in tasks:
+            rem = t.get('total_slots', 0) - t.get('completed_slots', 0)
+            buttons.append([InlineKeyboardButton(f"[{'ON' if t['active'] else 'OFF'}] {t['title']} (Rem: {rem})", callback_data=f"admin_deltask_{t['task_id']}")])
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")])
+        await query.edit_message_text("Click a task to turn OFF/Delete:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if data.startswith("admin_deltask_"):
+        tid = data.replace("admin_deltask_", "")
+        tasks_collection.update_one({"task_id": tid}, {"$set": {"active": False}})
+        await query.edit_message_text("✅ Task turned OFF successfully.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")]]))
+        return
+
+    # পেন্ডিং প্রুফ সাবমিশন রিভিউ
+    if data == "admin_submissions":
+        pending_subs = list(submissions_collection.find({"status": "pending"}).sort("created_at", -1).limit(10))
+        if not pending_subs:
+            await query.edit_message_text("📥 <b>Pending Submissions</b>\n\nNo pending submissions.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_home")]]), parse_mode="HTML")
+            return
+        buttons = []
+        for sub in pending_subs:
+            sid = str(sub["_id"])
+            buttons.append([InlineKeyboardButton(f"User: {sub['user_id']} | Task", callback_data=f"sub_manage_{sid}")])
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin_home")])
+        await query.edit_message_text("📥 <b>Pending Submissions</b>\n\nSelect a submission to review:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+        return
+
+    if data.startswith("sub_manage_"):
+        sid = data.replace("sub_manage_", "")
+        try:
+            sub = submissions_collection.find_one({"_id": ObjectId(sid)})
+        except:
+            sub = None
+        if not sub:
+            await query.answer("❌ Submission not found.", show_alert=True)
+            return
+
+        task = tasks_collection.find_one({"task_id": sub["task_id"]})
+        task_name = task["title"] if task else "Unknown"
+
+        await query.edit_message_text(
+            (
+                f"📥 <b>Submission Details</b>\n\n"
+                f"👤 User ID: <code>{sub['user_id']}</code>\n"
+                f"🎯 Task: <b>{task_name}</b>\n"
+                f"📄 Proof: <code>{sub['proof']}</code>\n"
+                f"📌 Status: <b>{sub['status']}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve & Reward", callback_data=f"sub_approve_{sid}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"sub_reject_{sid}")
+                ],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_submissions")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data.startswith("sub_approve_") or data.startswith("sub_reject_"):
+        action_type, sid = data.split("_")[1], data.split("_")[2]
+        new_status = "approved" if action_type == "approve" else "rejected"
+
+        sub = submissions_collection.find_one({"_id": ObjectId(sid)})
+        if sub and sub["status"] == "pending":
+            submissions_collection.update_one({"_id": ObjectId(sid)}, {"$set": {"status": new_status}})
+
+            task = tasks_collection.find_one({"task_id": sub["task_id"]})
+            reward = float(task.get("reward", 0)) if task else 0
+
+            if new_status == "approved":
+                # ডাবল রিওয়ার্ড আটকানোর জন্য চেক
+                already_done = users_collection.find_one({"user_id": sub["user_id"], "completed_tasks": sub["task_id"]})
+                if not already_done:
+                    users_collection.update_one(
+                        {"user_id": sub["user_id"]},
+                        {
+                            "$inc": {"balance": reward},
+                            "$addToSet": {"completed_tasks": sub["task_id"]}
+                        }
+                    )
+                    # স্লট আপডেট
+                    tasks_collection.update_one({"task_id": sub["task_id"]}, {"$inc": {"completed_slots": 1}})
+
+                try:
+                    await context.bot.send_message(sub["user_id"], f"✅ Your manual task proof has been approved! Rewarded: +{reward} {TOKEN_NAME}")
+                except:
+                    pass
+            else:
+                try:
+                    await context.bot.send_message(sub["user_id"], f"❌ Your task proof has been rejected.")
+                except:
+                    pass
+
+            await query.edit_message_text(f"✅ Submission marked as {new_status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_submissions")]]))
+        else:
+            await query.answer("Already processed.", show_alert=True)
+        return
+
+    # উইথড্র ম্যানেজমেন্ট (আগের মতো)
+    if data == "admin_withdrawals":
+        pending = list(withdrawals_collection.find({"status": "pending"}).sort("created_at", -1).limit(10))
+        if not pending:
+            await query.edit_message_text("💳 <b>Withdrawals</b>\n\nNo pending withdrawals.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_home")]]), parse_mode="HTML")
+            return
+        buttons = []
+        for item in pending:
+            wid = str(item["_id"])
+            amount = float(item.get("amount", 0))
+            buttons.append([InlineKeyboardButton(f"💰 {amount:.4f} POL - {item['user_id']}", callback_data=f"withdraw_manage_{wid}")])
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin_home")])
+        await query.edit_message_text("💳 <b>Pending Withdrawals</b>\n\nSelect to manage:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+        return
+
+    if data.startswith("withdraw_manage_"):
+        wid = data.replace("withdraw_manage_", "")
+        try:
+            wd = withdrawals_collection.find_one({"_id": ObjectId(wid)})
+        except:
+            wd = None
+        if not wd:
+            await query.answer("❌ Not found.", show_alert=True)
+            return
+        await query.edit_message_text(
+            (
+                f"💳 <b>Withdrawal Details</b>\n\n"
+                f"🆔 ID: <code>{wid}</code>\n"
+                f"👤 User: <code>{wd['user_id']}</code>\n"
+                f"💰 Amount: <b>{wd['amount']} POL</b>\n"
+                f"👛 Wallet: <code>{wd['wallet']}</code>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve_{wid}"),
+                    InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject_{wid}")
+                ],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_withdrawals")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data.startswith("wd_approve_") or data.startswith("wd_reject_"):
+        action_type, wid = data.split("_")[1], data.split("_")[2]
+        new_status = "approved" if action_type == "approve" else "rejected"
+        wd = withdrawals_collection.find_one({"_id": ObjectId(wid)})
+        if wd and wd["status"] == "pending":
+            withdrawals_collection.update_one({"_id": ObjectId(wid)}, {"$set": {"status": new_status}})
+            if new_status == "rejected":
+                users_collection.update_one({"user_id": wd["user_id"]}, {"$inc": {"balance": wd["amount"]}})
+                try:
+                    await context.bot.send_message(wd["user_id"], f"❌ Withdrawal rejected & refunded.")
+                except:
+                    pass
+            else:
+                try:
+                    await context.bot.send_message(wd["user_id"], f"✅ Withdrawal approved!")
+                except:
+                    pass
+            await query.edit_message_text(f"✅ Marked as {new_status}.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_withdrawals")]]))
+        return
+
+    if data == "admin_users":
+        total = users_collection.count_documents({})
+        await query.edit_message_text(
+            (f"👥 <b>User Management</b>\n\nTotal Users: <b>{total}</b>"),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚫 Ban User", callback_data="user_ban")],
+                [InlineKeyboardButton("🔓 Unban User", callback_data="user_unban")],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_home")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data == "user_ban":
+        context.user_data["admin_action"] = "user_ban_action"
+        await query.edit_message_text("🚫 Send User ID to ban:", parse_mode="HTML")
+        return
+    if data == "user_unban":
+        context.user_data["admin_action"] = "user_unban_action"
+        await query.edit_message_text("🔓 Send User ID to unban:", parse_mode="HTML")
+        return
+
+    if data == "admin_balance":
+        await query.edit_message_text(
+            "💰 <b>Balance Management</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Add POL", callback_data="balance_add"), InlineKeyboardButton("➖ Remove POL", callback_data="balance_remove")],
+                [InlineKeyboardButton("🔎 Check Balance", callback_data="balance_check")],
+                [InlineKeyboardButton("🔙 Back", callback_data="admin_home")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    if data == "admin_broadcast":
+        context.user_data["admin_action"] = "broadcast"
+        await query.edit_message_text("📢 <b>Broadcast</b>\n\nSend message to broadcast (or /cancel):", parse_mode="HTML")
+        return
+
+    if data == "admin_settings":
+        await query.edit_message_text(
+            (f"⚙️ <b>Settings</b>\n\nToken: <b>{TOKEN_NAME}</b>\nMin Withdraw: <b>{MIN_WITHDRAW}</b>"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_home")]]),
+            parse_mode="HTML"
+        )
+        return
+
+
+async def balance_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("❌ Unauthorized.", show_alert=True)
+        return
+    data = query.data
+    await query.answer()
+
+    if data == "balance_add":
+        context.user_data["admin_action"] = "balance_add"
+        await query.edit_message_text("➕ <b>Add POL</b>\n\nSend:\n<code>USER_ID AMOUNT</code>", parse_mode="HTML")
+        return
+    if data == "balance_remove":
+        context.user_data["admin_action"] = "balance_remove"
+        await query.edit_message_text("➖ <b>Remove POL</b>\n\nSend:\n<code>USER_ID AMOUNT</code>", parse_mode="HTML")
+        return
+    if data == "balance_check":
+        context.user_data["admin_action"] = "balance_check"
+        await query.edit_message_text("🔎 <b>Check Balance</b>\n\nSend User ID.", parse_mode="HTML")
+        return
+        
