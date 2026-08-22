@@ -2327,3 +2327,637 @@ async def admin_stats(update, context):
         f"💸 Pending Withdrawals: {pending_withdrawals}",
         reply_markup=admin_menu()
         )
+# =========================================================
+# PART 5B
+# WITHDRAW ADMIN + BUTTON HANDLER + TEXT HANDLER + MAIN
+# =========================================================
+
+# =========================================================
+# ADMIN WITHDRAWALS
+# =========================================================
+
+async def admin_withdrawals(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT *
+        FROM withdrawals
+        WHERE status = 'pending'
+        ORDER BY id ASC
+        LIMIT 20
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "💸 Pending Withdrawals\n\n"
+            "✅ No pending withdrawals.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"#{row['id']} | {row['amount']}",
+                callback_data=f"wd_{row['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Admin Panel",
+            callback_data="admin_panel"
+        )
+    ])
+
+    await query.edit_message_text(
+        "💸 Pending Withdrawals",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================================================
+# WITHDRAWAL DETAILS
+# =========================================================
+
+async def withdrawal_details(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        wid = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM withdrawals WHERE id = ?",
+        (wid,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+
+        await query.edit_message_text(
+            "❌ Withdrawal not found."
+        )
+
+        return
+
+    await query.edit_message_text(
+        "💸 Withdrawal\n\n"
+        f"🆔 ID: {row['id']}\n"
+        f"👤 User: {row['user_id']}\n"
+        f"💰 Amount: {row['amount']}\n"
+        f"📥 Address:\n{row['address']}\n"
+        f"📌 Status: {row['status']}",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Pay",
+                    callback_data=f"pay_{row['id']}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject",
+                    callback_data=f"rejectwd_{row['id']}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="admin_withdrawals"
+                )
+            ]
+        ])
+    )
+
+
+# =========================================================
+# PAY WITHDRAWAL
+# =========================================================
+
+async def pay_withdrawal(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        wid = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM withdrawals WHERE id = ?",
+        (wid,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Withdrawal not found."
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ Already processed."
+        )
+
+        return
+
+    cur.execute("""
+        UPDATE withdrawals
+        SET status = 'paid',
+            reviewed_at = ?
+        WHERE id = ?
+        AND status = 'pending'
+    """, (
+        datetime.utcnow().isoformat(),
+        wid
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "✅ Withdrawal marked as PAID.\n\n"
+        f"🆔 ID: {wid}\n"
+        f"💰 Amount: {row['amount']}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            row["user_id"],
+            "✅ Withdrawal Paid!\n\n"
+            f"💰 Amount: {row['amount']}"
+        )
+
+    except:
+        pass
+
+
+# =========================================================
+# REJECT WITHDRAWAL
+# =========================================================
+
+async def reject_withdrawal(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        wid = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM withdrawals WHERE id = ?",
+        (wid,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Withdrawal not found."
+        )
+
+        return
+
+    if row["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ Already processed."
+        )
+
+        return
+
+    cur.execute("""
+        UPDATE users
+        SET balance = balance + ?
+        WHERE user_id = ?
+    """, (
+        row["amount"],
+        row["user_id"]
+    ))
+
+    cur.execute("""
+        UPDATE withdrawals
+        SET status = 'rejected',
+            reviewed_at = ?
+        WHERE id = ?
+        AND status = 'pending'
+    """, (
+        datetime.utcnow().isoformat(),
+        wid
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "❌ Withdrawal rejected.\n\n"
+        f"🆔 ID: {wid}\n"
+        f"💰 {row['amount']} refunded."
+    )
+
+    try:
+
+        await context.bot.send_message(
+            row["user_id"],
+            "❌ Withdrawal Rejected.\n\n"
+            f"💰 {row['amount']} has been returned to your balance."
+        )
+
+    except:
+        pass
+
+
+# =========================================================
+# BUTTON HANDLER
+# =========================================================
+
+async def button_handler(update, context):
+
+    query = update.callback_query
+    data = query.data
+
+    if data == "admin_panel":
+
+        if not is_admin(query.from_user.id):
+
+            await query.answer(
+                "Unauthorized.",
+                show_alert=True
+            )
+
+            return
+
+        await query.answer()
+
+        await query.edit_message_text(
+            "🛠️ Admin Panel",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    if data == "admin_create":
+        await create_task_start(update, context)
+        return
+
+    if data.startswith("type_"):
+        await select_task_type(update, context)
+        return
+
+    if data == "admin_tasks":
+        await manage_tasks(update, context)
+        return
+
+    if data.startswith("manage_"):
+        await manage_task_details(update, context)
+        return
+
+    if data.startswith("toggle_"):
+        await toggle_task(update, context)
+        return
+
+    if data.startswith("delete_"):
+        await delete_task(update, context)
+        return
+
+    if data == "admin_pending":
+        await pending_submissions(update, context)
+        return
+
+    if data.startswith("submission_"):
+        await submission_details(update, context)
+        return
+
+    if data.startswith("approve_"):
+        await approve_submission(update, context)
+        return
+
+    if data.startswith("reject_"):
+        await reject_submission(update, context)
+        return
+
+    if data == "admin_users":
+        await admin_users(update, context)
+        return
+
+    if data == "admin_stats":
+        await admin_stats(update, context)
+        return
+
+    if data == "admin_withdrawals":
+        await admin_withdrawals(update, context)
+        return
+
+    if data.startswith("wd_"):
+        await withdrawal_details(update, context)
+        return
+
+    if data.startswith("pay_"):
+        await pay_withdrawal(update, context)
+        return
+
+    if data.startswith("rejectwd_"):
+        await reject_withdrawal(update, context)
+        return
+
+    if data.startswith("task_"):
+        await task_details(update, context)
+        return
+
+    if data.startswith("verify_"):
+        await verify_channel_join(update, context)
+        return
+
+    if data.startswith("submit_"):
+        await submit_task(update, context)
+        return
+
+    if data == "back_tasks":
+
+        await query.answer()
+
+        user_id = query.from_user.id
+
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT *
+            FROM tasks
+            WHERE active = 1
+            ORDER BY id DESC
+        """)
+
+        tasks = cur.fetchall()
+        conn.close()
+
+        buttons = []
+
+        for task in tasks:
+
+            if available_slots(task) <= 0:
+
+                automatically_disable_task(
+                    task["id"]
+                )
+
+                continue
+
+            if task_has_submission(
+                task["id"],
+                user_id
+            ):
+
+                continue
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🎯 {task['title']} "
+                    f"(+{task['reward']})",
+                    callback_data=f"task_{task['id']}"
+                )
+            ])
+
+        if not buttons:
+
+            await query.edit_message_text(
+                "😔 No tasks available."
+            )
+
+            return
+
+        await query.edit_message_text(
+            "💰 Available Tasks:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+
+# =========================================================
+# TEXT HANDLER
+# =========================================================
+
+async def text_handler(update, context):
+
+    text = update.message.text
+
+    if is_admin(update.effective_user.id):
+
+        if context.user_data.get(
+            "admin_action"
+        ) == "create_task":
+
+            handled = await handle_task_creation(
+                update,
+                context
+            )
+
+            if handled:
+                return
+
+    if context.user_data.get(
+        "submission_task_id"
+    ):
+
+        handled = await receive_proof(
+            update,
+            context
+        )
+
+        if handled:
+            return
+
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        handled = await handle_withdraw(
+            update,
+            context
+        )
+
+        if handled:
+            return
+
+    if text == "💰 Earn Tasks":
+
+        await show_tasks(
+            update,
+            context
+        )
+
+    elif text == "📊 My Balance":
+
+        await show_balance(
+            update,
+            context
+        )
+
+    elif text == "👥 Refer & Earn":
+
+        await referral(
+            update,
+            context
+        )
+
+    elif text == "🎁 Daily Bonus":
+
+        await daily_bonus(
+            update,
+            context
+        )
+
+    elif text == "💳 Withdraw":
+
+        await withdraw_start(
+            update,
+            context
+        )
+
+    elif text == "ℹ️ Help":
+
+        await update.message.reply_text(
+            "ℹ️ TaskMint Help\n\n"
+            "💰 Earn Tasks - Complete available tasks\n"
+            "👥 Refer - Invite friends\n"
+            "🎁 Daily Bonus - Claim once per day\n"
+            "📊 Balance - Check your balance\n"
+            "💳 Withdraw - Request payment"
+        )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(update, context):
+
+    logger.error(
+        "Telegram error: %s",
+        context.error
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    if TOKEN == "PUT_BOT_TOKEN_HERE":
+
+        print(
+            "ERROR: Set BOT_TOKEN environment variable."
+        )
+
+        return
+
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "admin",
+            admin_command
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            button_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is starting..."
+    )
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
