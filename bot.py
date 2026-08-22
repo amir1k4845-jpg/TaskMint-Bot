@@ -744,3 +744,281 @@ async def process_withdraw(
             )
 
         return
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+    total_users = users_collection.count_documents({})
+
+    total_tasks = tasks_collection.count_documents({})
+
+    pending_withdrawals = (
+        withdrawals_collection.count_documents(
+            {
+                "status": "pending"
+            }
+        )
+    )
+
+    await update.message.reply_text(
+        (
+            "👑 <b>Admin Panel</b>\n\n"
+            f"👥 Total Users: "
+            f"<b>{total_users}</b>\n"
+            f"🎯 Total Tasks: "
+            f"<b>{total_tasks}</b>\n"
+            f"💳 Pending Withdrawals: "
+            f"<b>{pending_withdrawals}</b>\n\n"
+            "⚙️ More admin features "
+            "will be added next."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# MENU HANDLER
+# =========================================================
+
+async def menu_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text
+
+    # -----------------------------------------------------
+    # SECURITY:
+    # USER MUST BE IN CHANNEL
+    # -----------------------------------------------------
+
+    is_member = await is_channel_member(
+        context.bot,
+        user_id
+    )
+
+    if not is_member:
+
+        await send_join_message(
+            update
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # TASKS
+    # -----------------------------------------------------
+
+    if text == "🎯 Tasks":
+
+        await tasks_menu(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # WITHDRAW
+    # -----------------------------------------------------
+
+    if text == "💳 Withdraw":
+
+        await withdraw_menu(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REFER
+    # -----------------------------------------------------
+
+    if text == "👥 Refer":
+
+        await refer_menu(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ADMIN PANEL
+    # -----------------------------------------------------
+
+    if text == "👑 Admin Panel":
+
+        await admin_panel(
+            update,
+            context
+        )
+
+        return
+
+
+# =========================================================
+# TEXT HANDLER
+# =========================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    # Withdrawal conversation
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        await process_withdraw(
+            update,
+            context
+        )
+
+        return
+
+    await menu_handler(
+        update,
+        context
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        repr(context.error)
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    # -----------------------------------------------------
+    # RENDER HEALTH SERVER
+    # -----------------------------------------------------
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    # -----------------------------------------------------
+    # MONGODB CONNECTION
+    # -----------------------------------------------------
+
+    print(
+        "Connecting to MongoDB..."
+    )
+
+    try:
+
+        mongo_client.admin.command(
+            "ping"
+        )
+
+        print(
+            "MongoDB connected successfully."
+        )
+
+    except Exception as error:
+
+        print(
+            "MongoDB connection failed:",
+            error
+        )
+
+        raise
+
+    setup_database()
+
+    # -----------------------------------------------------
+    # TELEGRAM BOT
+    # -----------------------------------------------------
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    # /start
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    # Verify Join
+    application.add_handler(
+        CallbackQueryHandler(
+            verify_join,
+            pattern="^verify_join$"
+        )
+    )
+
+    # Text messages
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    # Error handler
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    # -----------------------------------------------------
+    # START POLLING
+    # -----------------------------------------------------
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# =========================================================
+# RUN
+# =========================================================
+
+if __name__ == "__main__":
+
+    main()
