@@ -1211,6 +1211,7 @@ async def error_handler(update, context):
 
 
 def main():
+    # হেলথ সার্ভার আলাদা থ্রেডে চালু রাখা যাতে রেন্ডার পোর্ট ওপেন পায়
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
 
@@ -1228,9 +1229,11 @@ def main():
     application.add_error_handler(error_handler)
 
     print("TaskMint Bot is running with all updated features...")
-    application.run_polling(drop_pending_updates=True)
+    
+    # Render-এর জন্য পোলিং মোড সিকিউরভাবে রান করা
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
     main()
-            
+    
