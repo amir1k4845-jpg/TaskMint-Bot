@@ -1337,3 +1337,623 @@ async def admin_callback(
         )
 
         return
+    # -----------------------------------------------------
+    # BROADCAST
+    # -----------------------------------------------------
+
+    if data == "admin_broadcast":
+
+        context.user_data[
+            "admin_action"
+        ] = "broadcast"
+
+        await query.edit_message_text(
+            (
+                "📢 <b>Broadcast</b>\n\n"
+                "Send the message you want to "
+                "broadcast to all users.\n\n"
+                "Send /cancel to cancel."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SETTINGS
+    # -----------------------------------------------------
+
+    if data == "admin_settings":
+
+        await query.edit_message_text(
+            (
+                "⚙️ <b>Bot Settings</b>\n\n"
+                f"🪙 Token: <b>{TOKEN_NAME}</b>\n"
+                f"💳 Minimum Withdraw: "
+                f"<b>{MIN_WITHDRAW} POL</b>\n"
+                f"📢 Channel: "
+                f"<b>{REQUIRED_CHANNEL}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================================================
+# BALANCE ACTION CALLBACK
+# =========================================================
+
+async def balance_action_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized.",
+            show_alert=True
+        )
+
+        return
+
+    data = query.data
+
+    await query.answer()
+
+    if data == "balance_add":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_add"
+
+        await query.edit_message_text(
+            (
+                "➕ <b>Add POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>\n\n"
+                "Example:\n"
+                "<code>123456789 10</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "balance_remove":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_remove"
+
+        await query.edit_message_text(
+            (
+                "➖ <b>Remove POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "balance_check":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_check"
+
+        await query.edit_message_text(
+            (
+                "🔎 <b>Check Balance</b>\n\n"
+                "Send the User ID."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================================================
+# ADMIN TEXT ACTION
+# =========================================================
+
+async def admin_text_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return False
+
+    action = context.user_data.get(
+        "admin_action"
+    )
+
+    text = update.message.text.strip()
+
+    # -----------------------------------------------------
+    # BROADCAST
+    # -----------------------------------------------------
+
+    if action == "broadcast":
+
+        if text == "/cancel":
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Broadcast cancelled."
+            )
+
+            return True
+
+        users = users_collection.find(
+            {},
+            {"user_id": 1}
+        )
+
+        sent = 0
+        failed = 0
+
+        for user in users:
+
+            try:
+
+                await context.bot.send_message(
+                    chat_id=user["user_id"],
+                    text=text
+                )
+
+                sent += 1
+
+            except Exception:
+
+                failed += 1
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            (
+                "📢 <b>Broadcast Finished</b>\n\n"
+                f"✅ Sent: <b>{sent}</b>\n"
+                f"❌ Failed: <b>{failed}</b>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return True
+
+    # -----------------------------------------------------
+    # ADD BALANCE
+    # -----------------------------------------------------
+
+    if action == "balance_add":
+
+        try:
+
+            parts = text.split()
+
+            target_id = int(parts[0])
+            amount = float(parts[1])
+
+            if amount <= 0:
+                raise ValueError
+
+        except Exception:
+
+            await update.message.reply_text(
+                (
+                    "❌ Invalid format.\n\n"
+                    "Use:\n"
+                    "<code>USER_ID AMOUNT</code>\n\n"
+                    "Example:\n"
+                    "<code>123456789 10</code>"
+                ),
+                parse_mode="HTML"
+            )
+
+            return True
+
+        result = users_collection.update_one(
+            {"user_id": target_id},
+            {
+                "$inc": {
+                    "balance": amount
+                }
+            }
+        )
+
+        context.user_data.clear()
+
+        if result.matched_count == 0:
+
+            await update.message.reply_text(
+                "❌ User not found."
+            )
+
+        else:
+
+            await update.message.reply_text(
+                (
+                    "✅ <b>Balance Added</b>\n\n"
+                    f"👤 User: <code>{target_id}</code>\n"
+                    f"💰 Added: <b>+{amount:.6f} POL</b>\n"
+                    f"💎 Balance: "
+                    f"<b>{get_balance(target_id):.6f} POL</b>"
+                ),
+                parse_mode="HTML"
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # REMOVE BALANCE
+    # -----------------------------------------------------
+
+    if action == "balance_remove":
+
+        try:
+
+            parts = text.split()
+
+            target_id = int(parts[0])
+            amount = float(parts[1])
+
+            if amount <= 0:
+                raise ValueError
+
+        except Exception:
+
+            await update.message.reply_text(
+                (
+                    "❌ Invalid format.\n\n"
+                    "Use:\n"
+                    "<code>USER_ID AMOUNT</code>"
+                ),
+                parse_mode="HTML"
+            )
+
+            return True
+
+        result = users_collection.update_one(
+            {
+                "user_id": target_id,
+                "balance": {
+                    "$gte": amount
+                }
+            },
+            {
+                "$inc": {
+                    "balance": -amount
+                }
+            }
+        )
+
+        context.user_data.clear()
+
+        if result.modified_count != 1:
+
+            await update.message.reply_text(
+                "❌ User not found or insufficient balance."
+            )
+
+        else:
+
+            await update.message.reply_text(
+                (
+                    "✅ <b>Balance Removed</b>\n\n"
+                    f"👤 User: <code>{target_id}</code>\n"
+                    f"💰 Removed: <b>-{amount:.6f} POL</b>\n"
+                    f"💎 Balance: "
+                    f"<b>{get_balance(target_id):.6f} POL</b>"
+                ),
+                parse_mode="HTML"
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # CHECK BALANCE
+    # -----------------------------------------------------
+
+    if action == "balance_check":
+
+        try:
+
+            target_id = int(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Send a valid User ID."
+            )
+
+            return True
+
+        user = get_user(target_id)
+
+        context.user_data.clear()
+
+        if not user:
+
+            await update.message.reply_text(
+                "❌ User not found."
+            )
+
+            return True
+
+        await update.message.reply_text(
+            (
+                "💰 <b>User Balance</b>\n\n"
+                f"👤 User ID: <code>{target_id}</code>\n"
+                f"💎 Balance: "
+                f"<b>{get_balance(target_id):.6f} POL</b>\n"
+                f"👥 Referrals: "
+                f"<b>{user.get('referrals', 0)}</b>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return True
+
+    return False
+
+
+# =========================================================
+# MENU HANDLER
+# =========================================================
+
+async def menu_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text
+
+    member = await is_channel_member(
+        context.bot,
+        user_id
+    )
+
+    if not member:
+
+        await update.message.reply_text(
+            "🔐 Please join the channel first.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        await update.message.reply_text(
+            "👇 Join and press Done:",
+            reply_markup=join_keyboard()
+        )
+
+        return
+
+    # Admin actions
+    if user_id == ADMIN_ID:
+
+        handled = await admin_text_action(
+            update,
+            context
+        )
+
+        if handled:
+            return
+
+    if text == "🎯 Tasks":
+
+        await tasks_menu(
+            update,
+            context
+        )
+
+    elif text == "💰 Balance":
+
+        await balance_menu(
+            update,
+            context
+        )
+
+    elif text == "💳 Withdraw":
+
+        await withdraw_menu(
+            update,
+            context
+        )
+
+    elif text == "👥 Refer":
+
+        await refer_menu(
+            update,
+            context
+        )
+
+    elif text == "👑 Admin Panel":
+
+        await admin_panel(
+            update,
+            context
+        )
+
+
+# =========================================================
+# TEXT HANDLER
+# =========================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        await process_withdraw(
+            update,
+            context
+        )
+
+        return
+
+    await menu_handler(
+        update,
+        context
+    )
+
+
+# =========================================================
+# CALLBACK ROUTER
+# =========================================================
+
+async def callback_router(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    data = update.callback_query.data
+
+    if data == "check_join":
+
+        await check_join(
+            update,
+            context
+        )
+
+        return
+
+    if data.startswith("task_"):
+
+        await task_details(
+            update,
+            context
+        )
+
+        return
+
+    if data.startswith("complete_"):
+
+        await complete_task(
+            update,
+            context
+        )
+
+        return
+
+    if data.startswith("balance_"):
+
+        await balance_action_callback(
+            update,
+            context
+        )
+
+        return
+
+    if data.startswith("admin_"):
+
+        await admin_callback(
+            update,
+            context
+        )
+
+        return
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        repr(context.error)
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    print(
+        "Connecting to MongoDB..."
+    )
+
+    mongo_client.admin.command(
+        "ping"
+    )
+
+    print(
+        "MongoDB connected successfully."
+    )
+
+    setup_database()
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_router
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+
+    main()
