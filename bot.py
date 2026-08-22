@@ -744,3 +744,538 @@ async def show_tasks(update, context):
         "💰 Available Tasks:",
         reply_markup=InlineKeyboardMarkup(buttons)
         )
+# =========================================================
+# PART 3 / 5
+# USER TASK + CHANNEL AUTO VERIFY
+# =========================================================
+
+async def task_details(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    task = get_task(task_id)
+
+    if not task:
+        await query.edit_message_text(
+            "❌ Task not found."
+        )
+        return
+
+    if not task["active"]:
+        await query.edit_message_text(
+            "⛔ This task is no longer active."
+        )
+        return
+
+    if available_slots(task) <= 0:
+
+        automatically_disable_task(task_id)
+
+        await query.edit_message_text(
+            "⛔ No slots remaining."
+        )
+
+        return
+
+    if task_has_submission(
+        task_id,
+        user_id
+    ):
+
+        await query.edit_message_text(
+            "⚠️ You have already submitted this task."
+        )
+
+        return
+
+    text = (
+        f"🎯 {task['title']}\n\n"
+        f"📌 Type: {task['task_type'].upper()}\n"
+        f"💰 Reward: {task['reward']}\n"
+    )
+
+    if task["total_slots"] > 0:
+        remaining = available_slots(task)
+
+        text += (
+            f"🎯 Slots: "
+            f"{task['completed_slots']}/"
+            f"{task['total_slots']}\n"
+            f"🔥 Remaining: {remaining}\n"
+        )
+
+    text += (
+        f"\n📝 Instructions:\n"
+        f"{task['instruction']}\n"
+    )
+
+    if task["link"]:
+        text += (
+            f"\n🔗 Link:\n"
+            f"{task['link']}"
+        )
+
+    buttons = []
+
+    if task["link"]:
+        buttons.append([
+            InlineKeyboardButton(
+                "🔗 Open Task",
+                url=task["link"]
+            )
+        ])
+
+    if task["task_type"] == "channel":
+
+        buttons.append([
+            InlineKeyboardButton(
+                "✅ Verify Join",
+                callback_data=f"verify_{task_id}"
+            )
+        ])
+
+    else:
+
+        buttons.append([
+            InlineKeyboardButton(
+                "📤 Submit for Verification",
+                callback_data=f"submit_{task_id}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Back",
+            callback_data="back_tasks"
+        )
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================================================
+# CHANNEL AUTO VERIFICATION
+# =========================================================
+
+async def verify_channel_join(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    task = get_task(task_id)
+
+    if not task or task["task_type"] != "channel":
+        await query.edit_message_text(
+            "❌ Invalid task."
+        )
+        return
+
+    if not task["active"]:
+        await query.edit_message_text(
+            "⛔ Task is no longer active."
+        )
+        return
+
+    if available_slots(task) <= 0:
+
+        automatically_disable_task(task_id)
+
+        await query.edit_message_text(
+            "⛔ All slots are completed."
+        )
+
+        return
+
+    if task_has_submission(
+        task_id,
+        user_id
+    ):
+
+        await query.edit_message_text(
+            "⚠️ You already completed this task."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # TELEGRAM CHANNEL CHECK
+    # -----------------------------------------------------
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=CHANNEL_USERNAME,
+            user_id=user_id
+        )
+
+        joined_statuses = {
+            "member",
+            "administrator",
+            "creator"
+        }
+
+        if member.status not in joined_statuses:
+
+            await query.edit_message_text(
+                "❌ You have not joined the channel yet.\n\n"
+                f"Join {CHANNEL_USERNAME} first, "
+                "then press Verify again."
+            )
+
+            return
+
+    except Exception as e:
+
+        logger.error(
+            "Channel verification error: %s",
+            e
+        )
+
+        await query.edit_message_text(
+            "⚠️ Unable to verify your membership.\n"
+            "Please try again later."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # RE-CHECK SLOT + INSERT
+    # -----------------------------------------------------
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT *
+        FROM tasks
+        WHERE id = ?
+        AND active = 1
+    """, (task_id,))
+
+    fresh_task = cur.fetchone()
+
+    if not fresh_task:
+        conn.close()
+
+        await query.edit_message_text(
+            "⛔ Task is no longer available."
+        )
+
+        return
+
+    if (
+        fresh_task["total_slots"] > 0
+        and fresh_task["completed_slots"]
+        >= fresh_task["total_slots"]
+    ):
+
+        cur.execute("""
+            UPDATE tasks
+            SET active = 0
+            WHERE id = ?
+        """, (task_id,))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            "⛔ All slots have been completed."
+        )
+
+        return
+
+    try:
+
+        cur.execute("""
+            INSERT INTO task_submissions (
+                task_id,
+                user_id,
+                proof,
+                status,
+                reward,
+                submitted_at,
+                reviewed_at
+            )
+            VALUES (?, ?, ?, 'approved', ?, ?, ?)
+        """, (
+            task_id,
+            user_id,
+            "Telegram channel membership",
+            fresh_task["reward"],
+            datetime.utcnow().isoformat(),
+            datetime.utcnow().isoformat()
+        ))
+
+        cur.execute("""
+            UPDATE users
+            SET balance = balance + ?
+            WHERE user_id = ?
+        """, (
+            fresh_task["reward"],
+            user_id
+        ))
+
+        cur.execute("""
+            UPDATE tasks
+            SET completed_slots = completed_slots + 1
+            WHERE id = ?
+        """, (task_id,))
+
+        cur.execute("""
+            UPDATE tasks
+            SET active = 0
+            WHERE id = ?
+            AND total_slots > 0
+            AND completed_slots >= total_slots
+        """, (task_id,))
+
+        conn.commit()
+
+    except sqlite3.IntegrityError:
+
+        conn.rollback()
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ You already completed this task."
+        )
+
+        return
+
+    conn.close()
+
+    await query.edit_message_text(
+        "✅ Task Verified Successfully!\n\n"
+        f"💰 +{fresh_task['reward']} added to your balance."
+    )
+
+
+# =========================================================
+# MANUAL SUBMISSION
+# =========================================================
+
+async def submit_task(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    task = get_task(task_id)
+
+    if not task:
+        await query.edit_message_text(
+            "❌ Task not found."
+        )
+        return
+
+    if not task["active"]:
+        await query.edit_message_text(
+            "⛔ Task is inactive."
+        )
+        return
+
+    if available_slots(task) <= 0:
+        automatically_disable_task(task_id)
+
+        await query.edit_message_text(
+            "⛔ No slots remaining."
+        )
+        return
+
+    if task_has_submission(
+        task_id,
+        user_id
+    ):
+
+        await query.edit_message_text(
+            "⚠️ Already submitted."
+        )
+        return
+
+    context.user_data["submission_task_id"] = task_id
+
+    await query.edit_message_text(
+        "📤 Submit Task Proof\n\n"
+        "Send your proof in the next message.\n\n"
+        "Example:\n"
+        "Your X username / Instagram username /\n"
+        "Screenshot link / other proof."
+    )
+
+
+# =========================================================
+# RECEIVE MANUAL PROOF
+# =========================================================
+
+async def receive_proof(update, context):
+
+    task_id = context.user_data.get(
+        "submission_task_id"
+    )
+
+    if not task_id:
+        return False
+
+    user_id = update.effective_user.id
+    proof = update.message.text.strip()
+
+    task = get_task(task_id)
+
+    if not task:
+        context.user_data.pop(
+            "submission_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ Task no longer exists."
+        )
+
+        return True
+
+    if not task["active"]:
+
+        context.user_data.pop(
+            "submission_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "⛔ Task is no longer active."
+        )
+
+        return True
+
+    if available_slots(task) <= 0:
+
+        automatically_disable_task(task_id)
+
+        context.user_data.pop(
+            "submission_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "⛔ All slots are completed."
+        )
+
+        return True
+
+    conn = db()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("""
+            INSERT INTO task_submissions (
+                task_id,
+                user_id,
+                proof,
+                status,
+                reward,
+                submitted_at
+            )
+            VALUES (?, ?, ?, 'pending', ?, ?)
+        """, (
+            task_id,
+            user_id,
+            proof,
+            task["reward"],
+            datetime.utcnow().isoformat()
+        ))
+
+        submission_id = cur.lastrowid
+
+        conn.commit()
+
+    except sqlite3.IntegrityError:
+
+        conn.close()
+
+        await update.message.reply_text(
+            "⚠️ You already submitted this task."
+        )
+
+        context.user_data.pop(
+            "submission_task_id",
+            None
+        )
+
+        return True
+
+    conn.close()
+
+    context.user_data.pop(
+        "submission_task_id",
+        None
+    )
+
+    await update.message.reply_text(
+        "✅ Submission received!\n\n"
+        "⏳ Your task is waiting for admin verification.\n"
+        "You will receive your reward after approval."
+    )
+
+    # Notify admin
+    try:
+
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"📥 NEW TASK SUBMISSION\n\n"
+            f"🆔 Submission: {submission_id}\n"
+            f"🎯 Task: {task['title']}\n"
+            f"👤 User ID: {user_id}\n"
+            f"💰 Reward: {task['reward']}\n\n"
+            f"📌 Proof:\n{proof}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"approve_{submission_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Reject",
+                        callback_data=f"reject_{submission_id}"
+                    )
+                ]
+            ])
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "Admin notification error: %s",
+            e
+        )
+
+    return True
