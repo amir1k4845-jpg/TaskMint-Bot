@@ -42,10 +42,6 @@ MIN_WITHDRAW = 1.0
 DATABASE_NAME = "taskmint"
 
 
-# =========================================================
-# CHECK ENVIRONMENT
-# =========================================================
-
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing.")
 
@@ -60,29 +56,22 @@ if not MONGO_URI:
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-
         self.send_response(200)
-
         self.send_header(
             "Content-Type",
             "text/plain; charset=utf-8"
         )
-
         self.end_headers()
-
         self.wfile.write(
             b"TaskMint Bot is running!"
         )
 
     def do_HEAD(self):
-
         self.send_response(200)
-
         self.send_header(
             "Content-Type",
             "text/plain; charset=utf-8"
         )
-
         self.end_headers()
 
     def log_message(self, format, *args):
@@ -119,20 +108,19 @@ mongo_client = MongoClient(
 db = mongo_client["taskmint"]
 
 users_collection = db["users"]
-
+tasks_collection = db["tasks"]
 withdrawals_collection = db["withdrawals"]
 
-tasks_collection = db["tasks"]
-
-
-# =========================================================
-# DATABASE SETUP
-# =========================================================
 
 def setup_database():
 
     users_collection.create_index(
         "user_id",
+        unique=True
+    )
+
+    tasks_collection.create_index(
+        "task_id",
         unique=True
     )
 
@@ -144,14 +132,7 @@ def setup_database():
         "status"
     )
 
-    tasks_collection.create_index(
-        "task_id",
-        unique=True
-    )
-
-    print(
-        "MongoDB database ready."
-    )
+    print("MongoDB database ready.")
 
 
 # =========================================================
@@ -160,14 +141,10 @@ def setup_database():
 
 def create_or_update_user(user):
 
-    now = datetime.now(
-        timezone.utc
-    )
+    now = datetime.now(timezone.utc)
 
     users_collection.update_one(
-        {
-            "user_id": user.id
-        },
+        {"user_id": user.id},
         {
             "$set": {
                 "username": user.username or "",
@@ -191,9 +168,7 @@ def create_or_update_user(user):
 def get_user(user_id):
 
     return users_collection.find_one(
-        {
-            "user_id": user_id
-        }
+        {"user_id": user_id}
     )
 
 
@@ -216,21 +191,14 @@ def get_balance(user_id):
 def main_menu(user_id):
 
     buttons = [
-        [
-            "🎯 Tasks"
-        ],
-        [
-            "💳 Withdraw",
-            "👥 Refer"
-        ]
+        ["🎯 Tasks"],
+        ["💰 Balance", "💳 Withdraw"],
+        ["👥 Refer"],
     ]
 
     if user_id == ADMIN_ID:
-
         buttons.append(
-            [
-                "👑 Admin Panel"
-            ]
+            ["👑 Admin Panel"]
         )
 
     return ReplyKeyboardMarkup(
@@ -240,31 +208,29 @@ def main_menu(user_id):
 
 
 # =========================================================
-# CHANNEL BUTTONS
+# JOIN BUTTON
 # =========================================================
 
 def join_keyboard():
 
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "📢 Join Channel",
-                    url=CHANNEL_LINK
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Done",
-                    callback_data="check_join"
-                )
-            ]
+            InlineKeyboardButton(
+                "📢 Join Channel",
+                url=CHANNEL_LINK
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "✅ Done",
+                callback_data="check_join"
+            )
         ]
-    )
+    ])
 
 
 # =========================================================
-# CHANNEL MEMBERSHIP CHECK
+# CHANNEL CHECK
 # =========================================================
 
 async def is_channel_member(
@@ -288,7 +254,7 @@ async def is_channel_member(
     except Exception as error:
 
         print(
-            "Channel membership error:",
+            "Channel check error:",
             error
         )
 
@@ -308,26 +274,26 @@ async def start(
 
     create_or_update_user(user)
 
-    # Remove any old menu first.
+    context.user_data.clear()
+
     await update.message.reply_text(
         "Checking...",
         reply_markup=ReplyKeyboardRemove()
     )
 
-    is_member = await is_channel_member(
+    member = await is_channel_member(
         context.bot,
         user.id
     )
 
-    if not is_member:
+    if not member:
 
         await update.message.reply_text(
             (
                 "👋 <b>Hi dear user!</b>\n\n"
                 "Please join our official channel "
                 "then the bot will become active for you.\n\n"
-                "After joining, press "
-                "<b>Done</b>."
+                "After joining, press <b>Done</b>."
             ),
             reply_markup=join_keyboard(),
             parse_mode="HTML"
@@ -335,7 +301,6 @@ async def start(
 
         return
 
-    # Already joined
     await send_main_menu(
         context.bot,
         user.id
@@ -343,7 +308,7 @@ async def start(
 
 
 # =========================================================
-# SEND MAIN MENU
+# MAIN MENU
 # =========================================================
 
 async def send_main_menu(
@@ -355,7 +320,7 @@ async def send_main_menu(
         chat_id=user_id,
         text=(
             "🎉 <b>Welcome to TaskMint!</b>\n\n"
-            "Choose an option from the menu."
+            "Choose an option below."
         ),
         reply_markup=main_menu(user_id),
         parse_mode="HTML"
@@ -363,7 +328,7 @@ async def send_main_menu(
 
 
 # =========================================================
-# DONE BUTTON
+# DONE / JOIN VERIFY
 # =========================================================
 
 async def check_join(
@@ -375,12 +340,12 @@ async def check_join(
 
     user_id = query.from_user.id
 
-    is_member = await is_channel_member(
+    member = await is_channel_member(
         context.bot,
         user_id
     )
 
-    if not is_member:
+    if not member:
 
         await query.answer(
             "❌ Please join the channel first.",
@@ -390,14 +355,13 @@ async def check_join(
         return
 
     await query.answer(
-        "✅ Verified successfully!"
+        "✅ Verified!"
     )
 
     await query.edit_message_text(
         (
             "✅ <b>Done!</b>\n\n"
-            "Your membership has been verified.\n"
-            "The bot is now active."
+            "Your membership has been verified."
         ),
         parse_mode="HTML"
     )
@@ -405,6 +369,29 @@ async def check_join(
     await send_main_menu(
         context.bot,
         user_id
+    )
+
+
+# =========================================================
+# BALANCE
+# =========================================================
+
+async def balance_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    balance = get_balance(user_id)
+
+    await update.message.reply_text(
+        (
+            "💰 <b>Your Balance</b>\n\n"
+            f"💎 Balance: <b>{balance:.6f} "
+            f"{TOKEN_NAME}</b>"
+        ),
+        parse_mode="HTML"
     )
 
 
@@ -417,11 +404,198 @@ async def tasks_menu(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    tasks = list(
+        tasks_collection.find(
+            {"active": True}
+        ).sort("created_at", -1)
+    )
+
+    if not tasks:
+
+        await update.message.reply_text(
+            (
+                "🎯 <b>Tasks</b>\n\n"
+                "No tasks are available right now."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    buttons = []
+
+    for task in tasks:
+
+        buttons.append([
+            InlineKeyboardButton(
+                task.get(
+                    "title",
+                    "Task"
+                ),
+                callback_data=(
+                    f"task_{task['task_id']}"
+                )
+            )
+        ])
+
     await update.message.reply_text(
+        "🎯 <b>Available Tasks</b>",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# TASK DETAILS
+# =========================================================
+
+async def task_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    task_id = query.data.replace(
+        "task_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task not found.",
+            show_alert=True
+        )
+
+        return
+
+    keyboard = []
+
+    link = task.get("link")
+
+    if link:
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "🔗 Open Task",
+                url=link
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "✅ Complete",
+            callback_data=f"complete_{task_id}"
+        )
+    ])
+
+    await query.answer()
+
+    await query.edit_message_text(
         (
-            "🎯 <b>Tasks</b>\n\n"
-            "No tasks are available right now.\n\n"
-            "Tasks will be added by the admin."
+            f"🎯 <b>{task.get('title', 'Task')}</b>\n\n"
+            f"📝 {task.get('description', '')}\n\n"
+            f"💰 Reward: <b>"
+            f"{float(task.get('reward', 0)):.6f} "
+            f"{TOKEN_NAME}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# COMPLETE TASK
+# =========================================================
+
+async def complete_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    task_id = query.data.replace(
+        "complete_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task is no longer available.",
+            show_alert=True
+        )
+
+        return
+
+    reward = float(
+        task.get("reward", 0)
+    )
+
+    already_done = users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    )
+
+    if already_done:
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    users_collection.update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {
+                "balance": reward
+            },
+            "$addToSet": {
+                "completed_tasks": task_id
+            }
+        }
+    )
+
+    await query.answer(
+        "✅ Task completed!",
+        show_alert=True
+    )
+
+    await query.edit_message_text(
+        (
+            "🎉 <b>Task Completed!</b>\n\n"
+            f"💰 Reward: <b>+{reward:.6f} "
+            f"{TOKEN_NAME}</b>\n\n"
+            "The reward has been added "
+            "to your balance."
         ),
         parse_mode="HTML"
     )
@@ -440,14 +614,10 @@ async def refer_menu(
 
     user = get_user(user_id)
 
-    referrals = 0
-
-    if user:
-
-        referrals = user.get(
-            "referrals",
-            0
-        )
+    referrals = (
+        user.get("referrals", 0)
+        if user else 0
+    )
 
     bot_info = await context.bot.get_me()
 
@@ -460,10 +630,7 @@ async def refer_menu(
     await update.message.reply_text(
         (
             "👥 <b>Refer & Earn</b>\n\n"
-            f"👤 Total Referrals: "
-            f"<b>{referrals}</b>\n\n"
-            "Invite your friends using "
-            "your referral link.\n\n"
+            f"👤 Referrals: <b>{referrals}</b>\n\n"
             "🔗 <b>Your Referral Link:</b>\n"
             f"<code>{referral_link}</code>"
         ),
@@ -495,8 +662,7 @@ async def withdraw_menu(
                 f"<b>{balance:.6f} POL</b>\n"
                 f"📌 Minimum: "
                 f"<b>{MIN_WITHDRAW:.6f} POL</b>\n\n"
-                "❌ Your balance is not enough "
-                "for withdrawal."
+                "❌ Insufficient balance."
             ),
             parse_mode="HTML"
         )
@@ -510,12 +676,11 @@ async def withdraw_menu(
     await update.message.reply_text(
         (
             "💳 <b>POL Withdrawal</b>\n\n"
-            f"💰 Available Balance: "
+            f"💰 Available: "
             f"<b>{balance:.6f} POL</b>\n"
-            f"📌 Minimum Withdrawal: "
+            f"📌 Minimum: "
             f"<b>{MIN_WITHDRAW:.6f} POL</b>\n\n"
-            "Enter the amount of POL "
-            "you want to withdraw."
+            "Enter withdrawal amount:"
         ),
         parse_mode="HTML"
     )
@@ -541,44 +706,25 @@ async def process_withdraw(
     if step == "amount":
 
         try:
-
             amount = float(text)
-
         except ValueError:
-
             await update.message.reply_text(
-                "❌ Enter a valid POL amount."
+                "❌ Enter a valid amount."
             )
-
-            return
-
-        if amount <= 0:
-
-            await update.message.reply_text(
-                "❌ Amount must be greater than 0."
-            )
-
-            return
-
-        if amount < MIN_WITHDRAW:
-
-            await update.message.reply_text(
-                (
-                    f"❌ Minimum withdrawal is "
-                    f"{MIN_WITHDRAW:.6f} POL."
-                )
-            )
-
             return
 
         balance = get_balance(user_id)
 
-        if amount > balance:
-
+        if amount < MIN_WITHDRAW:
             await update.message.reply_text(
-                "❌ Insufficient POL balance."
+                f"❌ Minimum is {MIN_WITHDRAW} POL."
             )
+            return
 
+        if amount > balance:
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
             return
 
         context.user_data[
@@ -591,8 +737,8 @@ async def process_withdraw(
 
         await update.message.reply_text(
             (
-                "👛 <b>POL Wallet Address</b>\n\n"
-                "Please send your POL wallet address."
+                "👛 <b>POL Wallet</b>\n\n"
+                "Send your POL wallet address."
             ),
             parse_mode="HTML"
         )
@@ -608,13 +754,7 @@ async def process_withdraw(
         )
 
         if not amount:
-
             context.user_data.clear()
-
-            await update.message.reply_text(
-                "❌ Withdrawal session expired."
-            )
-
             return
 
         result = users_collection.update_one(
@@ -663,17 +803,10 @@ async def process_withdraw(
                 )
             )
 
-        except PyMongoError as error:
-
-            print(
-                "Withdrawal database error:",
-                error
-            )
+        except PyMongoError:
 
             users_collection.update_one(
-                {
-                    "user_id": user_id
-                },
+                {"user_id": user_id},
                 {
                     "$inc": {
                         "balance": amount
@@ -684,13 +817,12 @@ async def process_withdraw(
             context.user_data.clear()
 
             await update.message.reply_text(
-                "❌ Withdrawal failed. "
-                "Your balance has been restored."
+                "❌ Withdrawal failed."
             )
 
             return
 
-        withdrawal_id = str(
+        wid = str(
             result.inserted_id
         )
 
@@ -699,12 +831,9 @@ async def process_withdraw(
         await update.message.reply_text(
             (
                 "✅ <b>Withdrawal Submitted</b>\n\n"
-                f"🆔 ID: "
-                f"<code>{withdrawal_id}</code>\n"
-                f"💰 Amount: "
-                f"<b>{amount:.6f} POL</b>\n"
-                f"👛 Wallet: "
-                f"<code>{wallet}</code>\n"
+                f"🆔 ID: <code>{wid}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{wallet}</code>\n"
                 "📌 Status: <b>Pending</b>"
             ),
             parse_mode="HTML"
@@ -713,18 +842,13 @@ async def process_withdraw(
         try:
 
             await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=(
+                ADMIN_ID,
+                (
                     "🔔 <b>New Withdrawal</b>\n\n"
-                    f"🆔 ID: "
-                    f"<code>{withdrawal_id}</code>\n"
-                    f"👤 User ID: "
-                    f"<code>{user_id}</code>\n"
-                    f"💰 Amount: "
-                    f"<b>{amount:.6f} POL</b>\n"
-                    f"👛 Wallet: "
-                    f"<code>{wallet}</code>\n"
-                    "📌 Status: <b>Pending</b>"
+                    f"🆔 <code>{wid}</code>\n"
+                    f"👤 User: <code>{user_id}</code>\n"
+                    f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                    f"👛 Wallet: <code>{wallet}</code>"
                 ),
                 parse_mode="HTML"
             )
@@ -732,9 +856,63 @@ async def process_withdraw(
         except Exception as error:
 
             print(
-                "Admin notification error:",
+                "Admin notification:",
                 error
-    )
+            )
+
+
+# =========================================================
+# ADMIN KEYBOARD
+# =========================================================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            ),
+            InlineKeyboardButton(
+                "🎯 Manage Tasks",
+                callback_data="admin_tasks"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Withdrawals",
+                callback_data="admin_withdrawals"
+            ),
+            InlineKeyboardButton(
+                "👥 Users",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💰 Balance Management",
+                callback_data="admin_balance"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            ),
+            InlineKeyboardButton(
+                "⚙️ Settings",
+                callback_data="admin_settings"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_back"
+            )
+        ]
+    ])
+
+
 # =========================================================
 # ADMIN PANEL
 # =========================================================
@@ -744,278 +922,14 @@ async def admin_panel(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
-
-    if user_id != ADMIN_ID:
-
-        await update.message.reply_text(
-            "❌ You are not authorized."
-        )
-
+    if update.effective_user.id != ADMIN_ID:
         return
-
-    total_users = users_collection.count_documents({})
-
-    total_tasks = tasks_collection.count_documents({})
-
-    pending_withdrawals = (
-        withdrawals_collection.count_documents(
-            {
-                "status": "pending"
-            }
-        )
-    )
 
     await update.message.reply_text(
         (
             "👑 <b>Admin Panel</b>\n\n"
-            f"👥 Total Users: "
-            f"<b>{total_users}</b>\n"
-            f"🎯 Total Tasks: "
-            f"<b>{total_tasks}</b>\n"
-            f"💳 Pending Withdrawals: "
-            f"<b>{pending_withdrawals}</b>\n\n"
-            "⚙️ More admin features "
-            "will be added next."
+            "Select an option:"
         ),
+        reply_markup=admin_keyboard(),
         parse_mode="HTML"
-    )
-
-
-# =========================================================
-# MENU HANDLER
-# =========================================================
-
-async def menu_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    user_id = update.effective_user.id
-
-    text = update.message.text
-
-    # -----------------------------------------------------
-    # CHANNEL SECURITY
-    # -----------------------------------------------------
-
-    is_member = await is_channel_member(
-        context.bot,
-        user_id
-    )
-
-    if not is_member:
-
-        await update.message.reply_text(
-            "🔐 Please join our channel first.",
-            reply_markup=ReplyKeyboardRemove()
         )
-
-        await update.message.reply_text(
-            "👇 Join the channel and press Done:",
-            reply_markup=join_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # TASKS
-    # -----------------------------------------------------
-
-    if text == "🎯 Tasks":
-
-        await tasks_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # WITHDRAW
-    # -----------------------------------------------------
-
-    if text == "💳 Withdraw":
-
-        await withdraw_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # REFER
-    # -----------------------------------------------------
-
-    if text == "👥 Refer":
-
-        await refer_menu(
-            update,
-            context
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ADMIN
-    # -----------------------------------------------------
-
-    if text == "👑 Admin Panel":
-
-        await admin_panel(
-            update,
-            context
-        )
-
-        return
-
-
-# =========================================================
-# TEXT HANDLER
-# =========================================================
-
-async def text_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    # Withdrawal input
-
-    if context.user_data.get(
-        "withdraw_step"
-    ):
-
-        await process_withdraw(
-            update,
-            context
-        )
-
-        return
-
-    await menu_handler(
-        update,
-        context
-    )
-
-
-# =========================================================
-# ERROR HANDLER
-# =========================================================
-
-async def error_handler(
-    update,
-    context
-):
-
-    print(
-        "Telegram error:",
-        repr(context.error)
-    )
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-def main():
-
-    # -----------------------------------------------------
-    # RENDER HEALTH SERVER
-    # -----------------------------------------------------
-
-    health_thread = threading.Thread(
-        target=start_health_server,
-        daemon=True
-    )
-
-    health_thread.start()
-
-    # -----------------------------------------------------
-    # MONGODB
-    # -----------------------------------------------------
-
-    print(
-        "Connecting to MongoDB..."
-    )
-
-    try:
-
-        mongo_client.admin.command(
-            "ping"
-        )
-
-        print(
-            "MongoDB connected successfully."
-        )
-
-    except Exception as error:
-
-        print(
-            "MongoDB connection failed:",
-            error
-        )
-
-        raise
-
-    setup_database()
-
-    # -----------------------------------------------------
-    # TELEGRAM
-    # -----------------------------------------------------
-
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-
-    # /start
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    # Done button
-    application.add_handler(
-        CallbackQueryHandler(
-            check_join,
-            pattern="^check_join$"
-        )
-    )
-
-    # Text
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_handler
-        )
-    )
-
-    # Error handler
-    application.add_error_handler(
-        error_handler
-    )
-
-    print(
-        "TaskMint Bot is running..."
-    )
-
-    # -----------------------------------------------------
-    # POLLING
-    # -----------------------------------------------------
-
-    application.run_polling(
-        drop_pending_updates=True
-    )
-
-
-# =========================================================
-# RUN
-# =========================================================
-
-if __name__ == "__main__":
-
-    main()
