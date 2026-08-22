@@ -1918,3 +1918,412 @@ async def delete_task(update, context):
         "🗑️ Task deleted successfully.",
         reply_markup=admin_menu()
     )
+# =========================================================
+# PART 5A
+# BALANCE + REFERRAL + DAILY BONUS + WITHDRAW
+# =========================================================
+
+# =========================================================
+# BALANCE
+# =========================================================
+
+async def show_balance(update, context):
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        create_user(
+            user_id,
+            update.effective_user.username,
+            update.effective_user.first_name
+        )
+        user = get_user(user_id)
+
+    await update.message.reply_text(
+        "📊 Your Balance\n\n"
+        f"💰 Balance: {user['balance']}"
+    )
+
+
+# =========================================================
+# REFERRAL
+# =========================================================
+
+async def referral(update, context):
+
+    user_id = update.effective_user.id
+
+    bot_info = await context.bot.get_me()
+
+    link = (
+        f"https://t.me/{bot_info.username}"
+        f"?start={user_id}"
+    )
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM users WHERE referred_by = ?",
+        (user_id,)
+    )
+
+    count = cur.fetchone()[0]
+
+    conn.close()
+
+    await update.message.reply_text(
+        "👥 Refer & Earn\n\n"
+        f"💰 Reward per referral: {REFERRAL_REWARD}\n"
+        f"👥 Total referrals: {count}\n\n"
+        f"🔗 Your referral link:\n{link}"
+    )
+
+
+# =========================================================
+# DAILY BONUS
+# =========================================================
+
+async def daily_bonus(update, context):
+
+    user_id = update.effective_user.id
+
+    today = date.today().isoformat()
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT daily_bonus_date FROM users WHERE user_id = ?",
+        (user_id,)
+    )
+
+    row = cur.fetchone()
+
+    if row and row["daily_bonus_date"] == today:
+
+        conn.close()
+
+        await update.message.reply_text(
+            "⏳ You already claimed today's bonus."
+        )
+
+        return
+
+    cur.execute("""
+        UPDATE users
+        SET balance = balance + ?,
+            daily_bonus_date = ?
+        WHERE user_id = ?
+    """, (
+        DAILY_BONUS,
+        today,
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        "🎁 Daily Bonus Claimed!\n\n"
+        f"💰 +{DAILY_BONUS} added to your balance."
+    )
+
+
+# =========================================================
+# WITHDRAW START
+# =========================================================
+
+async def withdraw_start(update, context):
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        return
+
+    if user["balance"] < MIN_WITHDRAW:
+
+        await update.message.reply_text(
+            "❌ Insufficient balance.\n\n"
+            f"Minimum withdrawal: {MIN_WITHDRAW}\n"
+            f"Your balance: {user['balance']}"
+        )
+
+        return
+
+    context.user_data["withdraw_step"] = "amount"
+
+    await update.message.reply_text(
+        "💳 Withdraw\n\n"
+        f"Minimum: {MIN_WITHDRAW}\n"
+        f"Available: {user['balance']}\n\n"
+        "Send withdrawal amount."
+    )
+
+
+# =========================================================
+# WITHDRAW HANDLER
+# =========================================================
+
+async def handle_withdraw(update, context):
+
+    step = context.user_data.get(
+        "withdraw_step"
+    )
+
+    if step == "amount":
+
+        try:
+            amount = float(
+                update.message.text.strip()
+            )
+
+        except:
+
+            await update.message.reply_text(
+                "❌ Invalid amount."
+            )
+
+            return True
+
+        user = get_user(
+            update.effective_user.id
+        )
+
+        if amount < MIN_WITHDRAW:
+
+            await update.message.reply_text(
+                f"❌ Minimum withdrawal is {MIN_WITHDRAW}."
+            )
+
+            return True
+
+        if amount > user["balance"]:
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return True
+
+        context.user_data["withdraw_amount"] = amount
+        context.user_data["withdraw_step"] = "address"
+
+        await update.message.reply_text(
+            "📥 Send your withdrawal address."
+        )
+
+        return True
+
+    if step == "address":
+
+        address = update.message.text.strip()
+
+        amount = context.user_data.get(
+            "withdraw_amount"
+        )
+
+        user_id = update.effective_user.id
+
+        conn = db()
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE users
+            SET balance = balance - ?
+            WHERE user_id = ?
+            AND balance >= ?
+        """, (
+            amount,
+            user_id,
+            amount
+        ))
+
+        if cur.rowcount != 1:
+
+            conn.rollback()
+            conn.close()
+
+            await update.message.reply_text(
+                "❌ Withdrawal failed."
+            )
+
+            context.user_data.clear()
+
+            return True
+
+        cur.execute("""
+            INSERT INTO withdrawals (
+                user_id,
+                amount,
+                address,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, 'pending', ?)
+        """, (
+            user_id,
+            amount,
+            address,
+            datetime.utcnow().isoformat()
+        ))
+
+        withdrawal_id = cur.lastrowid
+
+        conn.commit()
+        conn.close()
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Withdrawal request submitted.\n\n"
+            f"🆔 ID: {withdrawal_id}\n"
+            f"💰 Amount: {amount}\n"
+            f"📌 Status: Pending"
+        )
+
+        try:
+
+            await context.bot.send_message(
+                ADMIN_ID,
+                "💸 NEW WITHDRAWAL\n\n"
+                f"🆔 ID: {withdrawal_id}\n"
+                f"👤 User: {user_id}\n"
+                f"💰 Amount: {amount}\n"
+                f"📥 Address:\n{address}",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "✅ Pay",
+                            callback_data=f"pay_{withdrawal_id}"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ Reject",
+                            callback_data=f"rejectwd_{withdrawal_id}"
+                        )
+                    ]
+                ])
+            )
+
+        except Exception as e:
+
+            logger.error(
+                "Withdrawal admin notification error: %s",
+                e
+            )
+
+        return True
+
+    return False
+
+
+# =========================================================
+# ADMIN USERS
+# =========================================================
+
+async def admin_users(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM users"
+    )
+
+    total = cur.fetchone()[0]
+
+    cur.execute(
+        "SELECT COALESCE(SUM(balance), 0) FROM users"
+    )
+
+    balance = cur.fetchone()[0]
+
+    conn.close()
+
+    await query.edit_message_text(
+        "👥 User Statistics\n\n"
+        f"👤 Total Users: {total}\n"
+        f"💰 Total Balance: {balance}",
+        reply_markup=admin_menu()
+    )
+
+
+# =========================================================
+# ADMIN STATISTICS
+# =========================================================
+
+async def admin_stats(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM users"
+    )
+    users = cur.fetchone()[0]
+
+    cur.execute(
+        "SELECT COUNT(*) FROM tasks"
+    )
+    tasks = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM tasks
+        WHERE active = 1
+    """)
+
+    active_tasks = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM task_submissions
+        WHERE status = 'pending'
+    """)
+
+    pending = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM task_submissions
+        WHERE status = 'approved'
+    """)
+
+    approved = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM withdrawals
+        WHERE status = 'pending'
+    """)
+
+    pending_withdrawals = cur.fetchone()[0]
+
+    conn.close()
+
+    await query.edit_message_text(
+        "📊 Statistics\n\n"
+        f"👥 Users: {users}\n"
+        f"📋 Total Tasks: {tasks}\n"
+        f"🟢 Active Tasks: {active_tasks}\n"
+        f"📥 Pending Submissions: {pending}\n"
+        f"✅ Approved Submissions: {approved}\n"
+        f"💸 Pending Withdrawals: {pending_withdrawals}",
+        reply_markup=admin_menu()
+        )
