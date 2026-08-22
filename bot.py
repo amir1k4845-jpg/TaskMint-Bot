@@ -1,503 +1,852 @@
 import os
-import threading
-import re
-import asyncio
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime, timezone
 
+from pymongo import MongoClient
 from telegram import (
     Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes,
-    MessageHandler,
     CallbackQueryHandler,
-    ConversationHandler,
+    MessageHandler,
+    ContextTypes,
     filters,
 )
 
-# =========================
+
+# =========================================================
 # CONFIG
-# =========================
+# =========================================================
 
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-MONGO_URI = os.getenv("MONGO_URI", "YOUR_MONGODB_URI_HERE")
-PORT = int(os.getenv("PORT", "10000"))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7003609983"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
 
-# Default crypto rewards (POL token)
-TASK_REWARD = 0.5
-REFERRAL_REWARD = 1.0
-DAILY_REWARD = 0.1
-MIN_WITHDRAW = 5.0
+ADMIN_ID = 7003609983
 
-AMOUNT, METHOD, ACCOUNT = range(3)
+REQUIRED_CHANNEL = "@TaskMint_v1"
 
-# =========================
-# MONGODB ASYNC SETUP
-# =========================
+TOKEN_NAME = "POL"
 
-client = AsyncIOMotorClient(MONGO_URI, tls=True)
-db = client["taskmint_bot_db"]
+MIN_WITHDRAW = 1.0
 
-users_col = db["users"]
-completed_tasks_col = db["completed_tasks"]
-withdrawals_col = db["withdrawals"]
-channel_tasks_col = db["channel_tasks"]
-settings_col = db["settings"]
 
-DEFAULT_SETTINGS = {
-    "button_earn": "💰 Earn POL",
-    "button_referral": "👥 Refer & Earn",
-    "button_withdraw": "💳 Withdraw",
-    "button_daily": "🎁 Daily Bonus",
-    "button_balance": "📊 My Balance",
-    "button_help": "ℹ️ Help",
-    "feature_earn": "1",
-    "feature_referral": "1",
-    "feature_withdraw": "1",
-    "feature_daily": "1",
-    "feature_balance": "1",
-    "feature_help": "1",
-    "reward_task": str(TASK_REWARD),
-    "reward_referral": str(REFERRAL_REWARD),
-    "reward_daily": str(DAILY_REWARD),
-    "min_withdraw": str(MIN_WITHDRAW),
-}
+# =========================================================
+# CHECK CONFIG
+# =========================================================
 
-SETTINGS_CACHE = {}
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is missing.")
 
-async def load_settings():
-    global SETTINGS_CACHE
-    async for setting in settings_col.find({}):
-        SETTINGS_CACHE[setting["key"]] = setting["value"]
-    
-    for key, value in DEFAULT_SETTINGS.items():
-        if key not in SETTINGS_CACHE:
-            SETTINGS_CACHE[key] = value
-            await settings_col.insert_one({"key": key, "value": value})
+if not MONGO_URI:
+    raise ValueError("MONGO_URI is missing.")
 
-def get_setting(key):
-    return SETTINGS_CACHE.get(key, DEFAULT_SETTINGS.get(key, ""))
 
-def setting_float(key, fallback):
-    try:
-        return float(get_setting(key))
-    except (TypeError, ValueError):
-        return fallback
+# =========================================================
+# MONGODB
+# =========================================================
 
-def feature_on(feature):
-    return get_setting(f"feature_{feature}") == "1"
+mongo_client = MongoClient(MONGO_URI)
 
-# =========================
-# USER HELPERS & MENUS
-# =========================
+database = mongo_client["taskmint"]
 
-def get_markup():
-    rows = []
-    current = []
-    for key in ("earn", "referral", "withdraw", "daily", "balance", "help"):
-        if feature_on(key):
-            current.append(get_setting(f"button_{key}"))
-            if len(current) == 2:
-                rows.append(current)
-                current = []
-    if current:
-        rows.append(current)
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+users_collection = database["users"]
+withdrawals_collection = database["withdrawals"]
+tasks_collection = database["tasks"]
 
-def get_menu_buttons_list():
-    return [get_setting(f"button_{k}") for k in ("earn", "referral", "withdraw", "daily", "balance", "help")]
 
-async def register_user(user, referred_by=None):
-    existing = await users_col.find_one({"user_id": user.id})
-    if not existing:
-        await users_col.insert_one({
-            "user_id": user.id,
-            "username": user.username or "",
-            "first_name": user.first_name or "",
-            "balance": 0.0,
-            "referred_by": referred_by,
-            "referral_rewarded": 0,
-            "last_bonus": ""
-        })
+# =========================================================
+# DATABASE INDEXES
+# =========================================================
 
-async def get_user(user_id):
-    return await users_col.find_one({"user_id": user_id})
+users_collection.create_index(
+    "user_id",
+    unique=True
+)
 
-async def get_balance(user_id):
-    user = await get_user(user_id)
-    return float(user.get("balance", 0.0)) if user else 0.0
+withdrawals_collection.create_index(
+    "user_id"
+)
 
-async def add_balance(user_id, amount):
-    await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": float(amount)}})
+tasks_collection.create_index(
+    "task_id",
+    unique=True
+)
 
-async def remove_balance(user_id, amount):
-    user = await get_user(user_id)
-    if user:
-        new_b = max(float(user.get("balance", 0.0)) - float(amount), 0.0)
-        await users_col.update_one({"user_id": user_id}, {"$set": {"balance": new_b}})
 
-async def create_default_task():
-    count = await channel_tasks_col.count_documents({})
-    if count == 0:
-        await channel_tasks_col.insert_one({
-            "task_id": 1,
-            "title": "Join Official Channel",
-            "channel": "@Telegram",
-            "channel_url": "https://t.me/Telegram",
-            "reward": setting_float("reward_task", TASK_REWARD),
-            "active": 1
-        })
-        
-# =========================
-# COMMANDS & FEATURES
-# =========================
+# =========================================================
+# USER FUNCTIONS
+# =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    referred_by = None
-    if context.args:
-        try:
-            ref_id = int(context.args[0])
-            if ref_id != user.id:
-                referred_by = ref_id
-        except ValueError:
-            pass
+def create_or_update_user(user):
 
-    await register_user(user, referred_by)
-    if referred_by:
-        await process_referral(user.id)
+    now = datetime.now(timezone.utc)
 
-    await update.message.reply_text(
-        "👋 Welcome to TaskMint Bot!\n\n"
-        "💰 Complete tasks and earn POL tokens.\n"
-        "👥 Invite friends and earn referral rewards.\n"
-        "🎁 Claim your daily bonus.\n"
-        "💳 Withdraw your earned POL instantly.\n\n"
-        "👇 Select an option from the menu below.",
-        reply_markup=get_markup()
+    users_collection.update_one(
+        {
+            "user_id": user.id
+        },
+        {
+            "$set": {
+                "username": user.username or "",
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "user_id": user.id,
+                "balance": 0.0,
+                "referrals": 0,
+                "referred_by": None,
+                "completed_tasks": [],
+                "daily_bonus_date": None,
+                "created_at": now,
+            }
+        },
+        upsert=True
     )
 
-async def earn_tasks(update, context):
-    if not feature_on("earn"):
-        await update.message.reply_text("⚠️ Earn Tasks is currently disabled.", reply_markup=get_markup())
-        return
 
-    cursor = channel_tasks_col.find({"active": 1})
-    rows = await cursor.to_list(length=100)
-    
-    if not rows:
-        await update.message.reply_text("💰 EARN POL\n\n😔 No tasks are available right now.", reply_markup=get_markup())
-        return
+def get_user(user_id):
 
-    buttons = []
-    for row in rows:
-        t_id = row["task_id"]
-        buttons.append([InlineKeyboardButton(f"📢 {row['title']} (+{row['reward']} POL)", url=row['channel_url'])])
-        buttons.append([InlineKeyboardButton(f"✅ Check Task #{t_id}", callback_data=f"check_task_{t_id}")])
-
-    await update.message.reply_text(
-        "💰 EARN POL\n\n📌 How to complete tasks:\n1️⃣ Join the Channel.\n2️⃣ Click the ✅ Check button below.",
-        reply_markup=InlineKeyboardMarkup(buttons)
+    return users_collection.find_one(
+        {
+            "user_id": user_id
+        }
     )
 
-async def task_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
 
-    if not data.startswith("check_task_"):
-        return
+def get_balance(user_id):
 
-    task_id = int(data.split("_")[2])
-    task = await channel_tasks_col.find_one({"task_id": task_id, "active": 1})
-    
-    if not task:
-        await query.edit_message_text("❌ This task is no longer available.")
-        return
+    user = get_user(user_id)
 
-    task_key = f"channel_{task_id}"
-    completed = await completed_tasks_col.find_one({"user_id": user_id, "task_key": task_key})
-    
-    if completed:
-        balance = await get_balance(user_id)
-        await query.edit_message_text(f"⚠️ TASK ALREADY COMPLETED\n\n💰 Current Balance: {balance:.2f} POL")
-        return
+    if not user:
+        return 0.0
 
-    try:
-        member = await context.bot.get_chat_member(chat_id=task["channel"], user_id=user_id)
-        if member.status in ("member", "administrator", "creator"):
-            await add_balance(user_id, task["reward"])
-            await completed_tasks_col.update_one(
-                {"user_id": user_id, "task_key": task_key},
-                {"$set": {"user_id": user_id, "task_key": task_key}},
-                upsert=True
-            )
-            balance = await get_balance(user_id)
-            await query.edit_message_text(f"🎉 TASK COMPLETED!\n\n✅ Reward: +{task['reward']} POL\n💰 Total Balance: {balance:.2f} POL")
-        else:
-            await query.edit_message_text("❌ TASK NOT COMPLETED\n\nPlease join the channel first.")
-    except Exception:
-        await query.edit_message_text("⚠️ Cannot verify task. Make sure the bot is an admin in the channel.")
-
-async def process_referral(user_id):
-    user = await get_user(user_id)
-    if not user or not user.get("referred_by") or user.get("referral_rewarded") == 1:
-        return
-
-    referrer_id = user["referred_by"]
-    reward = setting_float("reward_referral", REFERRAL_REWARD)
-    await add_balance(referrer_id, reward)
-    await users_col.update_one({"user_id": user_id}, {"$set": {"referral_rewarded": 1}})
-
-async def refer_earn(update, context):
-    user = update.effective_user
-    bot = await context.bot.get_me()
-    referral_link = f"https://t.me/{bot.username}?start={user.id}"
-    referrals = await users_col.count_documents({"referred_by": user.id, "referral_rewarded": 1})
-    reward = setting_float("reward_referral", REFERRAL_REWARD)
-
-    await update.message.reply_text(
-        f"👥 REFER & EARN\n\n🎁 Reward per invite: +{reward} POL\n👥 Total Referrals: {referrals}\n\n🔗 Your Link:\n{referral_link}",
-        reply_markup=get_markup()
+    return float(
+        user.get("balance", 0.0)
     )
 
-async def daily_bonus(update, context):
-    user_id = update.effective_user.id
-    user = await get_user(user_id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    if user and user.get("last_bonus") == today:
-        balance = await get_balance(user_id)
-        await update.message.reply_text(f"⏳ You already claimed today's bonus!\n💰 Balance: {balance:.2f} POL", reply_markup=get_markup())
-        return
 
-    reward = setting_float("reward_daily", DAILY_REWARD)
-    await add_balance(user_id, reward)
-    await users_col.update_one({"user_id": user_id}, {"$set": {"last_bonus": today}})
-    
-    new_balance = await get_balance(user_id)
-    await update.message.reply_text(f"🎉 DAILY BONUS CLAIMED!\n\n🎁 +{reward} POL\n💰 Total Balance: {new_balance:.2f} POL", reply_markup=get_markup())
+# =========================================================
+# MAIN MENU
+# =========================================================
 
-async def my_balance(update, context):
-    user_id = update.effective_user.id
-    balance = await get_balance(user_id)
-    referrals = await users_col.count_documents({"referred_by": user_id, "referral_rewarded": 1})
-    completed_tasks = await completed_tasks_col.count_documents({"user_id": user_id})
+def main_menu(user_id):
 
-    await update.message.reply_text(
-        f"📊 MY BALANCE\n\n💰 Available: {balance:.2f} POL\n👥 Referrals: {referrals}\n✅ Completed Tasks: {completed_tasks}",
-        reply_markup=get_markup()
-    )
+    buttons = [
+        ["🎯 Tasks"],
+        ["💳 Withdraw", "👥 Refer"],
+    ]
 
-async def help_menu(update, context):
-    await update.message.reply_text("ℹ️ HELP & INFO\n\nContact the administrator for support.", reply_markup=get_markup())
-            
-# =========================
-# WITHDRAWAL SYSTEM
-# =========================
-
-async def withdraw_start(update, context):
-    context.user_data.clear()
-    user_id = update.effective_user.id
-    balance = await get_balance(user_id)
-    minimum = setting_float("min_withdraw", MIN_WITHDRAW)
-
-    if balance < minimum:
-        await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance:.2f} POL\n📌 Minimum: {minimum:.2f} POL\n❌ Insufficient balance.", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    await update.message.reply_text(f"💳 WITHDRAW\n\n💰 Balance: {balance:.2f} POL\n📌 Minimum: {minimum:.2f} POL\n\nHow many POL do you want to withdraw? (Numbers only)")
-    return AMOUNT
-
-async def withdraw_amount(update, context):
-    text = update.message.text.strip()
-    if text in get_menu_buttons_list():
-        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    try:
-        amount = float(text)
-    except ValueError:
-        await update.message.reply_text("❌ Valid number required.")
-        return AMOUNT
-
-    balance = await get_balance(update.effective_user.id)
-    minimum = setting_float("min_withdraw", MIN_WITHDRAW)
-
-    if amount < minimum or amount > balance:
-        await update.message.reply_text(f"❌ Amount must be between {minimum:.2f} and {balance:.2f}.")
-        return AMOUNT
-
-    context.user_data["withdraw_amount"] = amount
-    await update.message.reply_text("💳 Send withdrawal method (e.g., Polygon Network, Binance):")
-    return METHOD
-
-async def withdraw_method(update, context):
-    text = update.message.text.strip()
-    if text in get_menu_buttons_list():
-        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    context.user_data["withdraw_method"] = text
-    await update.message.reply_text("📱 Send your Wallet Address:")
-    return ACCOUNT
-
-async def withdraw_account(update, context):
-    account = update.message.text.strip()
-    if account in get_menu_buttons_list():
-        await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
-        return ConversationHandler.END
-
-    user = update.effective_user
-    amount = context.user_data.get("withdraw_amount")
-    method = context.user_data.get("withdraw_method")
-
-    await remove_balance(user.id, amount)
-    w_id = await withdrawals_col.count_documents({}) + 1
-
-    await withdrawals_col.insert_one({
-        "req_id": w_id, "user_id": user.id, "amount": amount, 
-        "method": method, "account": account, "status": "pending"
-    })
-
-    await update.message.reply_text(f"✅ REQUEST SENT!\n\n🆔 #{w_id}\n💰 Amount: {amount:.2f} POL\n📱 Address: {account}", reply_markup=get_markup())
-    
-    if ADMIN_ID:
-        keyboard = [
-            [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{w_id}"),
-             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{w_id}")]
-        ]
-        await context.bot.send_message(
-            chat_id=ADMIN_ID, 
-            text=f"🔔 NEW WITHDRAWAL #{w_id}\n👤 User ID: {user.id}\n💰 Amount: {amount:.2f} POL\n💳 Method: {method}\n📱 Address: {account}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    if user_id == ADMIN_ID:
+        buttons.append(
+            ["👑 Admin Panel"]
         )
 
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def withdraw_cancel(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("❌ Cancelled.", reply_markup=get_markup())
-    return ConversationHandler.END
-
-# =========================
-# ADMIN CONTROLS
-# =========================
-
-async def admin_action_callback(update, context):
-    query = update.callback_query
-    data = query.data
-    
-    if query.from_user.id != ADMIN_ID:
-        await query.answer("You are not an admin!", show_alert=True)
-        return
-
-    action, req_id_str = data.split("_")[0], data.split("_")[1]
-    req_id = int(req_id_str)
-    
-    req = await withdrawals_col.find_one({"req_id": req_id})
-    if not req or req["status"] != "pending":
-        await query.answer("Request already processed or not found.", show_alert=True)
-        return
-
-    if action == "approve":
-        await withdrawals_col.update_one({"req_id": req_id}, {"$set": {"status": "approved"}})
-        await query.edit_message_text(f"{query.message.text}\n\n✅ **APPROVED**")
-        try:
-            await context.bot.send_message(chat_id=req["user_id"], text=f"🎉 Your withdrawal of {req['amount']:.2f} POL has been APPROVED and sent!")
-        except:
-            pass
-
-    elif action == "reject":
-        await withdrawals_col.update_one({"req_id": req_id}, {"$set": {"status": "rejected"}})
-        await add_balance(req["user_id"], req["amount"]) # Refund
-        await query.edit_message_text(f"{query.message.text}\n\n❌ **REJECTED (Refunded)**")
-        try:
-            await context.bot.send_message(chat_id=req["user_id"], text=f"❌ Your withdrawal of {req['amount']:.2f} POL was REJECTED. The amount has been refunded to your balance.")
-        except:
-            pass
-
-async def admin_broadcast(update, context):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    message = " ".join(context.args)
-    if not message:
-        await update.message.reply_text("Usage: /broadcast <message>")
-        return
-    
-    users = await users_col.find({}).to_list(length=None)
-    sent = 0
-    for u in users:
-        try:
-            await context.bot.send_message(chat_id=u["user_id"], text=f"📢 BROADCAST:\n\n{message}")
-            sent += 1
-            await asyncio.sleep(0.05) # Prevent flood wait
-        except:
-            pass
-    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
-
-# =========================
-# ROUTER & MAIN
-# =========================
-
-async def handle_menu_buttons(update, context):
-    text = update.message.text
-    if text == get_setting("button_earn"): await earn_tasks(update, context)
-    elif text == get_setting("button_referral"): await refer_earn(update, context)
-    elif text == get_setting("button_daily"): await daily_bonus(update, context)
-    elif text == get_setting("button_balance"): await my_balance(update, context)
-    elif text == get_setting("button_help"): await help_menu(update, context)
-    elif text == get_setting("button_withdraw"):
-        await update.message.reply_text("To withdraw, please click the Withdraw button again to start securely.")
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
-
-def web_server():
-    HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever()
-
-async def post_init(application):
-    await load_settings()
-    await create_default_task()
-
-def main():
-    threading.Thread(target=web_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
-
-    withdraw_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^" + re.escape(DEFAULT_SETTINGS["button_withdraw"]) + "$"), withdraw_start)],
-        states={
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_amount)],
-            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_method)],
-            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, withdraw_account)],
-        },
-        fallbacks=[CommandHandler("cancel", withdraw_cancel)],
-        allow_reentry=True
+    return ReplyKeyboardMarkup(
+        buttons,
+        resize_keyboard=True
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("broadcast", admin_broadcast))
-    app.add_handler(withdraw_conv)
-    app.add_handler(CallbackQueryHandler(task_callback, pattern="^check_task_"))
-    app.add_handler(CallbackQueryHandler(admin_action_callback, pattern="^(approve|reject)_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_buttons))
 
-    print("Bot started successfully!")
-    app.run_polling(drop_pending_updates=True)
+# =========================================================
+# REQUIRED CHANNEL
+# =========================================================
+
+def join_keyboard():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📢 Join Channel",
+                    url="https://t.me/TaskMint_v1"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Verify Join",
+                    callback_data="verify_join"
+                )
+            ]
+        ]
+    )
+
+
+async def check_channel_membership(
+    bot,
+    user_id
+):
+
+    try:
+
+        member = await bot.get_chat_member(
+            REQUIRED_CHANNEL,
+            user_id
+        )
+
+        return member.status in (
+            "member",
+            "administrator",
+            "creator",
+        )
+
+    except Exception as error:
+
+        print(
+            "Channel membership error:",
+            error
+        )
+
+        return False
+
+
+# =========================================================
+# START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user = update.effective_user
+
+    create_or_update_user(user)
+
+    is_member = await check_channel_membership(
+        context.bot,
+        user.id
+    )
+
+    if not is_member:
+
+        await update.message.reply_text(
+            (
+                "🔐 <b>Join Required</b>\n\n"
+                "To use TaskMint, you must join "
+                "our official channel first.\n\n"
+                "1️⃣ Join the channel\n"
+                "2️⃣ Click Verify Join\n"
+                "3️⃣ Access your dashboard"
+            ),
+            reply_markup=join_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    await send_main_menu(
+        update,
+        user.id
+    )
+
+
+# =========================================================
+# MAIN MENU MESSAGE
+# =========================================================
+
+async def send_main_menu(
+    update,
+    user_id
+):
+
+    await update.message.reply_text(
+        (
+            "🎉 <b>Welcome to TaskMint!</b>\n\n"
+            "Choose an option from the menu below."
+        ),
+        reply_markup=main_menu(user_id),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# VERIFY JOIN
+# =========================================================
+
+async def verify_join(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    is_member = await check_channel_membership(
+        context.bot,
+        user_id
+    )
+
+    if not is_member:
+
+        await query.answer(
+            "❌ You have not joined the channel yet.",
+            show_alert=True
+        )
+
+        return
+
+    await query.edit_message_text(
+        (
+            "✅ <b>Verification Successful!</b>\n\n"
+            "You can now use TaskMint."
+        ),
+        parse_mode="HTML"
+    )
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=(
+            "🏠 <b>Main Menu</b>\n\n"
+            "Choose an option below."
+        ),
+        reply_markup=main_menu(user_id),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# TASKS
+# =========================================================
+
+async def tasks_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        (
+            "🎯 <b>Tasks</b>\n\n"
+            "No tasks are available right now.\n\n"
+            "New tasks will appear here when "
+            "the admin adds them."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# REFER
+# =========================================================
+
+async def refer_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    referrals = 0
+
+    if user:
+        referrals = user.get(
+            "referrals",
+            0
+        )
+
+    bot_info = await context.bot.get_me()
+
+    referral_link = (
+        f"https://t.me/{bot_info.username}"
+        f"?start={user_id}"
+    )
+
+    await update.message.reply_text(
+        (
+            "👥 <b>Refer & Earn</b>\n\n"
+            f"👤 Referrals: <b>{referrals}</b>\n\n"
+            "Invite your friends using your "
+            "personal referral link.\n\n"
+            "🔗 <b>Your Referral Link:</b>\n"
+            f"<code>{referral_link}</code>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# WITHDRAW MENU
+# =========================================================
+
+async def withdraw_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    balance = get_balance(user_id)
+
+    context.user_data.clear()
+
+    if balance < MIN_WITHDRAW:
+
+        await update.message.reply_text(
+            (
+                "💳 <b>POL Withdrawal</b>\n\n"
+                f"💰 Balance: <b>{balance:.6f} POL</b>\n"
+                f"📌 Minimum: <b>{MIN_WITHDRAW:.6f} POL</b>\n\n"
+                "❌ Your balance is not enough "
+                "for withdrawal."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    context.user_data[
+        "withdraw_step"
+    ] = "amount"
+
+    await update.message.reply_text(
+        (
+            "💳 <b>POL Withdrawal</b>\n\n"
+            f"💰 Available Balance: "
+            f"<b>{balance:.6f} POL</b>\n"
+            f"📌 Minimum Withdrawal: "
+            f"<b>{MIN_WITHDRAW:.6f} POL</b>\n\n"
+            "Please enter the amount of "
+            "<b>POL</b> you want to withdraw."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# WITHDRAW PROCESS
+# =========================================================
+
+async def process_withdraw(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text.strip()
+
+    step = context.user_data.get(
+        "withdraw_step"
+    )
+
+    # -----------------------------------------------------
+    # AMOUNT
+    # -----------------------------------------------------
+
+    if step == "amount":
+
+        try:
+
+            amount = float(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Please enter a valid POL amount."
+            )
+
+            return
+
+        balance = get_balance(user_id)
+
+        if amount < MIN_WITHDRAW:
+
+            await update.message.reply_text(
+                (
+                    f"❌ Minimum withdrawal is "
+                    f"{MIN_WITHDRAW:.6f} POL."
+                )
+            )
+
+            return
+
+        if amount > balance:
+
+            await update.message.reply_text(
+                "❌ Insufficient POL balance."
+            )
+
+            return
+
+        context.user_data[
+            "withdraw_amount"
+        ] = amount
+
+        context.user_data[
+            "withdraw_step"
+        ] = "wallet"
+
+        await update.message.reply_text(
+            (
+                "💳 <b>Wallet Address</b>\n\n"
+                "Please send your POL wallet address."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # WALLET
+    # -----------------------------------------------------
+
+    if step == "wallet":
+
+        wallet = text
+
+        amount = context.user_data.get(
+            "withdraw_amount"
+        )
+
+        if not amount:
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Withdrawal session expired."
+            )
+
+            return
+
+        balance = get_balance(user_id)
+
+        if amount > balance:
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return
+
+        now = datetime.now(timezone.utc)
+
+        # Reserve/deduct balance
+        result = users_collection.update_one(
+            {
+                "user_id": user_id,
+                "balance": {
+                    "$gte": amount
+                }
+            },
+            {
+                "$inc": {
+                    "balance": -amount
+                }
+            }
+        )
+
+        if result.modified_count != 1:
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Unable to process withdrawal."
+            )
+
+            return
+
+        withdrawal = {
+            "user_id": user_id,
+            "amount": amount,
+            "token": TOKEN_NAME,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        result = withdrawals_collection.insert_one(
+            withdrawal
+        )
+
+        withdrawal_id = str(
+            result.inserted_id
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            (
+                "✅ <b>Withdrawal Submitted</b>\n\n"
+                f"🆔 ID: <code>{withdrawal_id}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{wallet}</code>\n"
+                "📌 Status: <b>Pending</b>\n\n"
+                "Your withdrawal request has been "
+                "sent to the admin."
+            ),
+            parse_mode="HTML"
+        )
+
+        # Notify admin
+        try:
+
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "🔔 <b>New Withdrawal</b>\n\n"
+                    f"🆔 ID: <code>{withdrawal_id}</code>\n"
+                    f"👤 User ID: <code>{user_id}</code>\n"
+                    f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                    f"👛 Wallet: <code>{wallet}</code>\n"
+                    "📌 Status: <b>Pending</b>"
+                ),
+                parse_mode="HTML"
+            )
+
+        except Exception as error:
+
+            print(
+                "Admin notification error:",
+                error
+            )
+
+        return
+
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "❌ You are not authorized."
+        )
+
+        return
+
+    total_users = users_collection.count_documents({})
+
+    pending_withdrawals = withdrawals_collection.count_documents(
+        {
+            "status": "pending"
+        }
+    )
+
+    await update.message.reply_text(
+        (
+            "👑 <b>Admin Panel</b>\n\n"
+            f"👥 Total Users: <b>{total_users}</b>\n"
+            f"💳 Pending Withdrawals: "
+            f"<b>{pending_withdrawals}</b>\n\n"
+            "⚙️ Advanced admin controls "
+            "will be added next."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# BUTTON HANDLER
+# =========================================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = update.message.text
+
+    user_id = update.effective_user.id
+
+    # =====================================================
+    # SECURITY CHECK
+    # =====================================================
+
+    is_member = await check_channel_membership(
+        context.bot,
+        user_id
+    )
+
+    if not is_member:
+
+        await update.message.reply_text(
+            (
+                "🔐 <b>Channel Join Required</b>\n\n"
+                "Please join the required channel "
+                "before using the bot."
+            ),
+            reply_markup=join_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # TASKS
+    # =====================================================
+
+    if text == "🎯 Tasks":
+
+        await tasks_menu(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # WITHDRAW
+    # =====================================================
+
+    if text == "💳 Withdraw":
+
+        await withdraw_menu(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # REFER
+    # =====================================================
+
+    if text == "👥 Refer":
+
+        await refer_menu(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # ADMIN
+    # =====================================================
+
+    if text == "👑 Admin Panel":
+
+        await admin_panel(
+            update,
+            context
+        )
+
+        return
+
+
+# =========================================================
+# TEXT HANDLER
+# =========================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        await process_withdraw(
+            update,
+            context
+        )
+
+        return
+
+    await button_handler(
+        update,
+        context
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        context.error
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    print(
+        "Connecting to MongoDB..."
+    )
+
+    mongo_client.admin.command(
+        "ping"
+    )
+
+    print(
+        "MongoDB connected successfully."
+    )
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            verify_join,
+            pattern="^verify_join$"
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is running..."
+    )
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
     main()
-            
