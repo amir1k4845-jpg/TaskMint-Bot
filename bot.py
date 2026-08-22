@@ -116,3 +116,481 @@ def update_setting(key, value):
         upsert=True
     )
     
+# =========================================================
+# USER FUNCTIONS, START & 4-TASK REFERRAL CHECK
+# =========================================================
+
+def create_or_update_user(user, referrer_id=None):
+    now = datetime.now(timezone.utc)
+    existing_user = users_collection.find_one({"user_id": user.id})
+
+    if not existing_user:
+        ref_by = None
+        if referrer_id and referrer_id != user.id:
+            ref_user = users_collection.find_one({"user_id": referrer_id})
+            if ref_user:
+                ref_by = referrer_id
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"referrals": 1}}
+                )
+
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                },
+                "$setOnInsert": {
+                    "user_id": user.id,
+                    "balance": 0.0,
+                    "referrals": 0,
+                    "referred_by": ref_by,
+                    "ref_bonus_paid": False,
+                    "completed_tasks": [],
+                    "is_banned": False,
+                    "created_at": now
+                }
+            },
+            upsert=True
+        )
+    else:
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                }
+            }
+        )
+
+
+def get_user(user_id):
+    return users_collection.find_one({"user_id": user_id})
+
+
+def get_balance(user_id):
+    user = get_user(user_id)
+    if not user:
+        return 0.0
+    return float(user.get("balance", 0.0))
+
+
+def check_and_pay_referral(user_id, context):
+    """ইউজার ৪টি টাস্ক কমপ্লিট করলে রেফারারকে কমিশন দেওয়ার লজিক"""
+    user = get_user(user_id)
+    if not user:
+        return
+
+    # যদি ইতিমধেই বোনাস দেওয়া হয়ে থাকে বা রেফারার না থাকে
+    if user.get("ref_bonus_paid", False):
+        return
+
+    referred_by = user.get("referred_by")
+    completed_tasks = user.get("completed_tasks", [])
+
+    # যদি টাস্ক সংখ্যা ৪ বা তার বেশি হয়
+    if referred_by and len(completed_tasks) >= 4:
+        ref_commission = float(get_setting("ref_commission", DEFAULT_REF_COMMISSION))
+        
+        # রেফারারের ব্যালেন্স বাড়ানো
+        users_collection.update_one(
+            {"user_id": referred_by},
+            {"$inc": {"balance": ref_commission}}
+        )
+
+        # ইউজারের ফ্ল্যাগ আপডেট করা যাতে ডাবল কমিশন না যায়
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"ref_bonus_paid": True}}
+        )
+
+        try:
+            context.bot.send_message(
+                referred_by,
+                (
+                    "🎉 <b>Referral Bonus Unlocked!</b>\n\n"
+                    f"Your referred user has completed 4 tasks.\n"
+                    f"💰 You received <b>+{ref_commission} {TOKEN_NAME}</b> commission!"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+
+def main_menu(user_id):
+    buttons = [
+        ["🎯 Tasks"],
+        ["💰 Balance", "💳 Withdraw"],
+        ["👥 Refer"],
+    ]
+    if user_id == ADMIN_ID:
+        buttons.append(["👑 Admin Panel"])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+
+def join_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("✅ Done", callback_data="check_join")]
+    ])
+
+
+async def is_channel_member(bot, user_id):
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as error:
+        print("Channel check error:", error)
+        return False
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    referrer_id = None
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+        except ValueError:
+            pass
+
+    create_or_update_user(user, referrer_id)
+
+    db_user = get_user(user.id)
+    if db_user and db_user.get("is_banned", False):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
+
+    context.user_data.clear()
+    await update.message.reply_text("Checking...", reply_markup=ReplyKeyboardRemove())
+
+    member = await is_channel_member(context.bot, user.id)
+    if not member:
+        await update.message.reply_text(
+            (
+                "👋 <b>Hi dear user!</b>\n\n"
+                "Please join our official channel "
+                "then the bot will become active for you.\n\n"
+                "After joining, press <b>Done</b>."
+            ),
+            reply_markup=join_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    await send_main_menu(context.bot, user.id)
+
+
+async def send_main_menu(bot, user_id):
+    await bot.send_message(
+        chat_id=user_id,
+        text=("🎉 <b>Welcome to TaskMint!</b>\n\nChoose an option below."),
+        reply_markup=main_menu(user_id),
+        parse_mode="HTML"
+    )
+
+
+async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    member = await is_channel_member(context.bot, user_id)
+    if not member:
+        await query.answer("❌ Please join the channel first.", show_alert=True)
+        return
+
+    await query.answer("✅ Verified!")
+    await query.edit_message_text("✅ <b>Done!</b>\n\nYour membership has been verified.", parse_mode="HTML")
+    await send_main_menu(context.bot, user_id)
+
+
+async def balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    await update.message.reply_text(
+        (
+            "💰 <b>Your Balance</b>\n\n"
+            f"💎 Balance: <b>{balance:.6f} {TOKEN_NAME}</b>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tasks = list(tasks_collection.find({"active": True}).sort("created_at", -1))
+    if not tasks:
+        await update.message.reply_text("🎯 <b>Tasks</b>\n\nNo tasks are available right now.", parse_mode="HTML")
+        return
+
+    buttons = []
+    for task in tasks:
+        total_slots = task.get("total_slots", 0)
+        completed_slots = task.get("completed_slots", 0)
+        remaining = total_slots - completed_slots
+
+        if total_slots > 0 and remaining <= 0:
+            tasks_collection.update_one({"task_id": task["task_id"]}, {"$set": {"active": False}})
+            continue
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"{task.get('title', 'Task')} (Rem: {remaining if total_slots > 0 else '∞'})",
+                callback_data=f"task_{task['task_id']}"
+            )
+        ])
+
+    if not buttons:
+        await update.message.reply_text("🎯 <b>Tasks</b>\n\nNo tasks are available right now.", parse_mode="HTML")
+        return
+
+    await update.message.reply_text(
+        "🎯 <b>Available Tasks</b>",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML"
+    )
+
+
+async def task_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    task_id = query.data.replace("task_", "", 1)
+
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+    if not task:
+        await query.answer("❌ Task not found or inactive.", show_alert=True)
+        return
+
+    keyboard = []
+    link = task.get("link")
+    if link:
+        keyboard.append([InlineKeyboardButton("🔗 Open Task Link", url=link)])
+
+    task_type = task.get("task_type", "auto")
+    if task_type == "auto":
+        keyboard.append([InlineKeyboardButton("✅ Complete (Auto)", callback_data=f"complete_{task_id}")])
+    else:
+        keyboard.append([InlineKeyboardButton("📤 Submit Proof (Manual)", callback_data=f"submitproof_{task_id}")])
+
+    await query.answer()
+    await query.edit_message_text(
+        (
+            f"🎯 <b>{task.get('title', 'Task')}</b>\n\n"
+            f"📝 {task.get('description', '')}\n\n"
+            f"🔹 Type: <b>{task_type.upper()}</b>\n"
+            f"💰 Reward: <b>{float(task.get('reward', 0)):.6f} {TOKEN_NAME}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
+
+
+async def complete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    task_id = query.data.replace("complete_", "", 1)
+
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+    if not task:
+        await query.answer("❌ Task is no longer available.", show_alert=True)
+        return
+
+    already_done = users_collection.find_one({"user_id": user_id, "completed_tasks": task_id})
+    if already_done:
+        await query.answer("❌ You already completed this task.", show_alert=True)
+        return
+
+    reward = float(task.get("reward", 0))
+    total_slots = task.get("total_slots", 0)
+    completed_slots = task.get("completed_slots", 0)
+    if total_slots > 0 and completed_slots >= total_slots:
+        tasks_collection.update_one({"task_id": task_id}, {"$set": {"active": False}})
+        await query.answer("❌ Task slots are finished.", show_alert=True)
+        return
+
+    users_collection.update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {"balance": reward},
+            "$addToSet": {"completed_tasks": task_id}
+        }
+    )
+    tasks_collection.update_one({"task_id": task_id}, {"$inc": {"completed_slots": 1}})
+
+    # ৪টি টাস্ক কমপ্লিট করার রেফারেল চেক কল করা
+    check_and_pay_referral(user_id, context)
+
+    await query.answer("✅ Task completed!", show_alert=True)
+    await query.edit_message_text(
+        (
+            "🎉 <b>Task Completed!</b>\n\n"
+            f"💰 Reward: <b>+{reward:.6f} {TOKEN_NAME}</b>\n\n"
+            "The reward has been added to your balance."
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def request_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    task_id = query.data.replace("submitproof_", "", 1)
+
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+    if not task:
+        await query.answer("❌ Task not available.", show_alert=True)
+        return
+
+    already_done = users_collection.find_one({"user_id": user_id, "completed_tasks": task_id})
+    if already_done:
+        await query.answer("❌ You already completed this task.", show_alert=True)
+        return
+
+    pending_sub = submissions_collection.find_one({"user_id": user_id, "task_id": task_id, "status": "pending"})
+    if pending_sub:
+        await query.answer("❌ You already have a pending submission for this task.", show_alert=True)
+        return
+
+    context.user_data["submitting_task_id"] = task_id
+    await query.answer()
+    await query.edit_message_text(
+        (
+            "📤 <b>Submit Task Proof</b>\n\n"
+            f"Task: <b>{task.get('title')}</b>\n\n"
+            "Please send your proof (Text, Username, or Screenshot link) in the next message:"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def refer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    referrals = user.get("referrals", 0) if user else 0
+    ref_commission = float(get_setting("ref_commission", DEFAULT_REF_COMMISSION))
+    bot_info = await context.bot.get_me()
+    referral_link = f"https://t.me/{bot_info.username}?start={user_id}"
+
+    await update.message.reply_text(
+        (
+            "👥 <b>Refer & Earn</b>\n\n"
+            f"👤 Referrals: <b>{referrals}</b>\n"
+            f"🎁 Commission: <b>{ref_commission} {TOKEN_NAME}</b> (After referred user completes 4 tasks)\n\n"
+            "🔗 <b>Your Referral Link:</b>\n"
+            f"<code>{referral_link}</code>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    min_withdraw = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
+    context.user_data.clear()
+
+    if balance < min_withdraw:
+        await update.message.reply_text(
+            (
+                "💳 <b>POL Withdrawal</b>\n\n"
+                f"💰 Balance: <b>{balance:.6f} POL</b>\n"
+                f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\n"
+                "❌ Insufficient balance."
+            ),
+            parse_mode="HTML"
+        )
+        return
+
+    context.user_data["withdraw_step"] = "amount"
+    await update.message.reply_text(
+        (
+            "💳 <b>POL Withdrawal</b>\n\n"
+            f"💰 Available: <b>{balance:.6f} POL</b>\n"
+            f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\n"
+            "Enter withdrawal amount:"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    step = context.user_data.get("withdraw_step")
+    min_withdraw = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
+
+    if step == "amount":
+        try:
+            amount = float(text)
+        except ValueError:
+            await update.message.reply_text("❌ Enter a valid amount.")
+            return
+
+        balance = get_balance(user_id)
+        if amount < min_withdraw:
+            await update.message.reply_text(f"❌ Minimum is {min_withdraw} POL.")
+            return
+        if amount > balance:
+            await update.message.reply_text("❌ Insufficient balance.")
+            return
+
+        context.user_data["withdraw_amount"] = amount
+        context.user_data["withdraw_step"] = "wallet"
+        await update.message.reply_text("👛 <b>POL Wallet</b>\n\nSend your POL wallet address.", parse_mode="HTML")
+        return
+
+    if step == "wallet":
+        wallet = text
+        amount = context.user_data.get("withdraw_amount")
+        if not amount:
+            context.user_data.clear()
+            return
+
+        result = users_collection.update_one(
+            {"user_id": user_id, "balance": {"$gte": amount}},
+            {"$inc": {"balance": -amount}}
+        )
+
+        if result.modified_count != 1:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Insufficient balance.")
+            return
+
+        now = datetime.now(timezone.utc)
+        withdrawal = {
+            "user_id": user_id,
+            "amount": amount,
+            "token": TOKEN_NAME,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now
+        }
+
+        try:
+            result = withdrawals_collection.insert_one(withdrawal)
+        except PyMongoError:
+            users_collection.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
+            context.user_data.clear()
+            await update.message.reply_text("❌ Withdrawal failed.")
+            return
+
+        wid = str(result.inserted_id)
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            (
+                "✅ <b>Withdrawal Submitted</b>\n\n"
+                f"🆔 ID: <code>{wid}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{wallet}</code>\n"
+                "📌 Status: <b>Pending</b>"
+            ),
+            parse_mode="HTML"
+    )
+    
