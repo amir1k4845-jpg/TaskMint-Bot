@@ -1279,3 +1279,642 @@ async def receive_proof(update, context):
         )
 
     return True
+# =========================================================
+# PART 4 / 5
+# ADMIN VERIFICATION + TASK MANAGEMENT
+# =========================================================
+
+async def approve_submission(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        submission_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            s.*,
+            t.title,
+            t.active,
+            t.total_slots,
+            t.completed_slots,
+            t.reward AS task_reward
+        FROM task_submissions s
+        JOIN tasks t
+        ON s.task_id = t.id
+        WHERE s.id = ?
+    """, (submission_id,))
+
+    submission = cur.fetchone()
+
+    if not submission:
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Submission not found."
+        )
+
+        return
+
+    if submission["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            f"⚠️ Already processed.\n\n"
+            f"Status: {submission['status']}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SLOT CHECK
+    # -----------------------------------------------------
+
+    if (
+        submission["total_slots"] > 0
+        and submission["completed_slots"]
+        >= submission["total_slots"]
+    ):
+
+        cur.execute("""
+            UPDATE tasks
+            SET active = 0
+            WHERE id = ?
+        """, (submission["task_id"],))
+
+        conn.commit()
+        conn.close()
+
+        await query.edit_message_text(
+            "⛔ Cannot approve.\n"
+            "All task slots are already completed."
+        )
+
+        return
+
+    reward = submission["task_reward"]
+
+    # -----------------------------------------------------
+    # APPROVE
+    # -----------------------------------------------------
+
+    cur.execute("""
+        UPDATE task_submissions
+        SET status = 'approved',
+            reward = ?,
+            reviewed_at = ?
+        WHERE id = ?
+        AND status = 'pending'
+    """, (
+        reward,
+        datetime.utcnow().isoformat(),
+        submission_id
+    ))
+
+    if cur.rowcount != 1:
+
+        conn.rollback()
+        conn.close()
+
+        await query.edit_message_text(
+            "⚠️ Submission was already processed."
+        )
+
+        return
+
+    cur.execute("""
+        UPDATE users
+        SET balance = balance + ?
+        WHERE user_id = ?
+    """, (
+        reward,
+        submission["user_id"]
+    ))
+
+    cur.execute("""
+        UPDATE tasks
+        SET completed_slots = completed_slots + 1
+        WHERE id = ?
+    """, (
+        submission["task_id"],
+    ))
+
+    cur.execute("""
+        UPDATE tasks
+        SET active = 0
+        WHERE id = ?
+        AND total_slots > 0
+        AND completed_slots >= total_slots
+    """, (
+        submission["task_id"],
+    ))
+
+    conn.commit()
+
+    cur.execute("""
+        SELECT completed_slots, total_slots
+        FROM tasks
+        WHERE id = ?
+    """, (
+        submission["task_id"],
+    ))
+
+    updated_task = cur.fetchone()
+
+    conn.close()
+
+    await query.edit_message_text(
+        "✅ Submission APPROVED\n\n"
+        f"🆔 Submission: {submission_id}\n"
+        f"👤 User: {submission['user_id']}\n"
+        f"💰 Reward: +{reward}\n"
+        f"🎯 Task: {submission['title']}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            submission["user_id"],
+            f"🎉 Task Approved!\n\n"
+            f"🎯 {submission['title']}\n"
+            f"💰 +{reward} added to your balance."
+        )
+
+    except:
+        pass
+
+
+async def reject_submission(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        submission_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            s.*,
+            t.title
+        FROM task_submissions s
+        JOIN tasks t
+        ON s.task_id = t.id
+        WHERE s.id = ?
+    """, (submission_id,))
+
+    submission = cur.fetchone()
+
+    if not submission:
+        conn.close()
+
+        await query.edit_message_text(
+            "❌ Submission not found."
+        )
+
+        return
+
+    if submission["status"] != "pending":
+
+        conn.close()
+
+        await query.edit_message_text(
+            f"⚠️ Already processed.\n\n"
+            f"Status: {submission['status']}"
+        )
+
+        return
+
+    cur.execute("""
+        UPDATE task_submissions
+        SET status = 'rejected',
+            reviewed_at = ?
+        WHERE id = ?
+        AND status = 'pending'
+    """, (
+        datetime.utcnow().isoformat(),
+        submission_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "❌ Submission REJECTED\n\n"
+        f"🆔 Submission: {submission_id}\n"
+        f"👤 User: {submission['user_id']}\n"
+        f"🎯 Task: {submission['title']}"
+    )
+
+    try:
+
+        await context.bot.send_message(
+            submission["user_id"],
+            f"❌ Task Rejected\n\n"
+            f"🎯 {submission['title']}\n\n"
+            "Your submitted proof was rejected by admin."
+        )
+
+    except:
+        pass
+
+
+# =========================================================
+# PENDING SUBMISSIONS
+# =========================================================
+
+async def pending_submissions(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            s.id,
+            s.user_id,
+            s.proof,
+            s.reward,
+            s.submitted_at,
+            t.title
+        FROM task_submissions s
+        JOIN tasks t
+        ON s.task_id = t.id
+        WHERE s.status = 'pending'
+        ORDER BY s.id ASC
+        LIMIT 20
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+
+        await query.edit_message_text(
+            "📥 Pending Submissions\n\n"
+            "✅ No pending submissions.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    buttons = []
+
+    for row in rows:
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"🆔 {row['id']} | "
+                f"{row['title'][:25]}",
+                callback_data=f"submission_{row['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Admin Panel",
+            callback_data="admin_panel"
+        )
+    ])
+
+    await query.edit_message_text(
+        "📥 Pending Submissions\n\n"
+        "Select a submission:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================================================
+# SUBMISSION DETAILS
+# =========================================================
+
+async def submission_details(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        submission_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            s.*,
+            t.title
+        FROM task_submissions s
+        JOIN tasks t
+        ON s.task_id = t.id
+        WHERE s.id = ?
+    """, (
+        submission_id,
+    ))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+
+        await query.edit_message_text(
+            "❌ Submission not found."
+        )
+
+        return
+
+    text = (
+        "📥 Submission Details\n\n"
+        f"🆔 ID: {row['id']}\n"
+        f"👤 User ID: {row['user_id']}\n"
+        f"🎯 Task: {row['title']}\n"
+        f"💰 Reward: {row['reward']}\n"
+        f"📌 Status: {row['status']}\n\n"
+        f"📝 Proof:\n{row['proof']}"
+    )
+
+    buttons = []
+
+    if row["status"] == "pending":
+
+        buttons.append([
+            InlineKeyboardButton(
+                "✅ Approve",
+                callback_data=f"approve_{row['id']}"
+            ),
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=f"reject_{row['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Pending",
+            callback_data="admin_pending"
+        )
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================================================
+# MANAGE TASKS
+# =========================================================
+
+async def manage_tasks(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT *
+        FROM tasks
+        ORDER BY id DESC
+        LIMIT 30
+    """)
+
+    tasks = cur.fetchall()
+    conn.close()
+
+    if not tasks:
+
+        await query.edit_message_text(
+            "📋 No tasks created yet.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    buttons = []
+
+    for task in tasks:
+
+        status = "🟢" if task["active"] else "🔴"
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"{status} #{task['id']} "
+                f"{task['title'][:22]}",
+                callback_data=f"manage_{task['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "➕ Create Task",
+            callback_data="admin_create"
+        )
+    ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Admin Panel",
+            callback_data="admin_panel"
+        )
+    ])
+
+    await query.edit_message_text(
+        "📋 Manage Tasks",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================================================
+# TASK ADMIN DETAILS
+# =========================================================
+
+async def manage_task_details(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    task = get_task(task_id)
+
+    if not task:
+        await query.edit_message_text(
+            "❌ Task not found."
+        )
+        return
+
+    slot_text = (
+        "Unlimited"
+        if task["total_slots"] == 0
+        else f"{task['completed_slots']}/"
+             f"{task['total_slots']}"
+    )
+
+    status = (
+        "🟢 ACTIVE"
+        if task["active"]
+        else "🔴 INACTIVE"
+    )
+
+    text = (
+        f"🎯 Task #{task['id']}\n\n"
+        f"📌 Type: {task['task_type'].upper()}\n"
+        f"📝 {task['title']}\n"
+        f"🔗 {task['link']}\n"
+        f"💰 Reward: {task['reward']}\n"
+        f"🎯 Slots: {slot_text}\n"
+        f"📊 Status: {status}\n\n"
+        f"📝 {task['instruction']}"
+    )
+
+    toggle_text = (
+        "🔴 Deactivate"
+        if task["active"]
+        else "🟢 Activate"
+    )
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                toggle_text,
+                callback_data=f"toggle_{task_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑️ Delete",
+                callback_data=f"delete_{task_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data="admin_tasks"
+            )
+        ]
+    ]
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def toggle_task(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE tasks
+        SET active = CASE
+            WHEN active = 1 THEN 0
+            ELSE 1
+        END
+        WHERE id = ?
+    """, (
+        task_id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await manage_task_details(
+        update,
+        context
+    )
+
+
+async def delete_task(update, context):
+
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    try:
+        task_id = int(
+            query.data.split("_")[1]
+        )
+    except:
+        return
+
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "DELETE FROM tasks WHERE id = ?",
+        (task_id,)
+    )
+
+    cur.execute(
+        "DELETE FROM task_submissions WHERE task_id = ?",
+        (task_id,)
+    )
+
+    conn.commit()
+    conn.close()
+
+    await query.edit_message_text(
+        "🗑️ Task deleted successfully.",
+        reply_markup=admin_menu()
+    )
