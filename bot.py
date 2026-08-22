@@ -933,3 +933,407 @@ async def admin_panel(
         reply_markup=admin_keyboard(),
         parse_mode="HTML"
         )
+# =========================================================
+# ADMIN KEYBOARD
+# =========================================================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            ),
+            InlineKeyboardButton(
+                "🎯 Manage Tasks",
+                callback_data="admin_tasks"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Withdrawals",
+                callback_data="admin_withdrawals"
+            ),
+            InlineKeyboardButton(
+                "👥 Users",
+                callback_data="admin_users"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💰 Balance Management",
+                callback_data="admin_balance"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            ),
+            InlineKeyboardButton(
+                "⚙️ Settings",
+                callback_data="admin_settings"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_back"
+            )
+        ]
+    ])
+
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text(
+        (
+            "👑 <b>Admin Panel</b>\n\n"
+            "Select an option:"
+        ),
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ADMIN CALLBACK
+# =========================================================
+
+async def admin_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized.",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    # -----------------------------------------------------
+    # ADMIN HOME
+    # -----------------------------------------------------
+
+    if data == "admin_home":
+
+        await query.edit_message_text(
+            "👑 <b>Admin Panel</b>\n\nSelect an option:",
+            reply_markup=admin_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # STATISTICS
+    # -----------------------------------------------------
+
+    if data == "admin_stats":
+
+        total_users = (
+            users_collection.count_documents({})
+        )
+
+        total_tasks = (
+            tasks_collection.count_documents({})
+        )
+
+        pending = (
+            withdrawals_collection.count_documents(
+                {"status": "pending"}
+            )
+        )
+
+        approved = (
+            withdrawals_collection.count_documents(
+                {"status": "approved"}
+            )
+        )
+
+        rejected = (
+            withdrawals_collection.count_documents(
+                {"status": "rejected"}
+            )
+        )
+
+        total_paid = list(
+            withdrawals_collection.aggregate([
+                {
+                    "$match": {
+                        "status": "approved"
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": None,
+                        "total": {
+                            "$sum": "$amount"
+                        }
+                    }
+                }
+            ])
+        )
+
+        paid_amount = (
+            float(total_paid[0]["total"])
+            if total_paid
+            else 0
+        )
+
+        await query.edit_message_text(
+            (
+                "📊 <b>Statistics</b>\n\n"
+                f"👥 Total Users: "
+                f"<b>{total_users}</b>\n"
+                f"🎯 Total Tasks: "
+                f"<b>{total_tasks}</b>\n"
+                f"🕐 Pending Withdrawals: "
+                f"<b>{pending}</b>\n"
+                f"✅ Approved Withdrawals: "
+                f"<b>{approved}</b>\n"
+                f"❌ Rejected Withdrawals: "
+                f"<b>{rejected}</b>\n"
+                f"💰 Total Paid: "
+                f"<b>{paid_amount:.6f} POL</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # MANAGE TASKS
+    # -----------------------------------------------------
+
+    if data == "admin_tasks":
+
+        active = tasks_collection.count_documents(
+            {"active": True}
+        )
+
+        inactive = tasks_collection.count_documents(
+            {"active": False}
+        )
+
+        await query.edit_message_text(
+            (
+                "🎯 <b>Manage Tasks</b>\n\n"
+                f"🟢 Active Tasks: <b>{active}</b>\n"
+                f"🔴 Inactive Tasks: <b>{inactive}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "➕ Add Task",
+                        callback_data="task_add"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📋 Active Tasks",
+                        callback_data="task_list"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🗑 Delete Task",
+                        callback_data="task_delete"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # WITHDRAWALS
+    # -----------------------------------------------------
+
+    if data == "admin_withdrawals":
+
+        pending = list(
+            withdrawals_collection.find(
+                {"status": "pending"}
+            ).sort(
+                "created_at",
+                -1
+            ).limit(10)
+        )
+
+        if not pending:
+
+            await query.edit_message_text(
+                (
+                    "💳 <b>Withdrawals</b>\n\n"
+                    "No pending withdrawals."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+                ]),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for item in pending:
+
+            wid = str(
+                item["_id"]
+            )
+
+            amount = float(
+                item.get("amount", 0)
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"💰 {amount:.4f} POL",
+                    callback_data=f"withdraw_{wid}"
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_home"
+            )
+        ])
+
+        await query.edit_message_text(
+            (
+                "💳 <b>Pending Withdrawals</b>\n\n"
+                "Select a withdrawal:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # USERS
+    # -----------------------------------------------------
+
+    if data == "admin_users":
+
+        total = users_collection.count_documents({})
+
+        await query.edit_message_text(
+            (
+                "👥 <b>User Management</b>\n\n"
+                f"Total Users: <b>{total}</b>\n\n"
+                "User management options:"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔎 Search User",
+                        callback_data="user_search"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🚫 Ban User",
+                        callback_data="user_ban"
+                    ),
+                    InlineKeyboardButton(
+                        "🔓 Unban User",
+                        callback_data="user_unban"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # BALANCE MANAGEMENT
+    # -----------------------------------------------------
+
+    if data == "admin_balance":
+
+        await query.edit_message_text(
+            (
+                "💰 <b>Balance Management</b>\n\n"
+                "Manage user POL balance:"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "➕ Add POL",
+                        callback_data="balance_add"
+                    ),
+                    InlineKeyboardButton(
+                        "➖ Remove POL",
+                        callback_data="balance_remove"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔎 Check Balance",
+                        callback_data="balance_check"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
