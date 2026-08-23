@@ -1237,8 +1237,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📋 <b>Task List (Click to Delete/Manage)</b>", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
         except Exception as e:
             print("Task list error:", e)
-            await query.answer("❌ Error loading tasks.", show_alert=True)
+            try:
+                await query.answer("❌ Error loading tasks.", show_alert=True)
+            except Exception:
+                pass
         return
+        
         
 
     if data.startswith("admintask_view_"):
