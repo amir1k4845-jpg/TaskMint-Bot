@@ -213,3 +213,101 @@ async def check_and_pay_referral(user_id, context):
         except Exception:
             pass
             
+def main_menu(user_id):
+    buttons = [
+        ["🎯 Tasks"],
+        ["💰 Balance", "💳 Withdraw"],
+        ["👥 Refer"],
+    ]
+    if user_id == ADMIN_ID:
+        buttons.append(["👑 Admin Panel"])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+
+def join_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("✅ Done", callback_data="check_join")]
+    ])
+
+
+async def is_channel_member(bot, user_id):
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as error:
+        print("Channel check error:", error)
+        return False
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    referrer_id = None
+
+    if context.args:
+        try:
+            referrer_id = int(context.args[0])
+        except ValueError:
+            pass
+
+    create_or_update_user(user, referrer_id)
+    db_user = get_user(user.id)
+
+    if db_user and db_user.get("is_banned", False):
+        await update.message.reply_text("❌ You are banned from using this bot.")
+        return
+
+    context.user_data.clear()
+    await update.message.reply_text("Checking...", reply_markup=ReplyKeyboardRemove())
+
+    member = await is_channel_member(context.bot, user.id)
+    if not member:
+        await update.message.reply_text(
+            (
+                "👋 <b>Hi dear user!</b>\n\n"
+                "Please join our official channel "
+                "then the bot will become active for you.\n\n"
+                "After joining, press <b>Done</b>."
+            ),
+            reply_markup=join_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    await send_main_menu(context.bot, user.id)
+
+
+async def send_main_menu(bot, user_id):
+    await bot.send_message(
+        chat_id=user_id,
+        text="🎉 <b>Welcome to TaskMint!</b>\n\nChoose an option below.",
+        reply_markup=main_menu(user_id),
+        parse_mode="HTML"
+    )
+
+
+async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    member = await is_channel_member(context.bot, user_id)
+    if not member:
+        await query.answer("❌ Please join the channel first.", show_alert=True)
+        return
+
+    await query.answer("✅ Verified!")
+    await query.edit_message_text(
+        "✅ <b>Done!</b>\n\nYour membership has been verified.",
+        parse_mode="HTML"
+    )
+    await send_main_menu(context.bot, user_id)
+
+
+async def balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    await update.message.reply_text(
+        f"💰 <b>Your Balance</b>\n\n💎 Balance: <b>{balance:.6f} {TOKEN_NAME}</b>",
+        parse_mode="HTML"
+    )
+    
