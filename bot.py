@@ -3949,3 +3949,483 @@ async def admin_text_action(
 
 
     return False
+# =========================
+# MENU HANDLER
+# =========================
+
+async def menu_handler(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    user = get_user(
+        user_id
+    )
+
+    if (
+        user
+        and user.get(
+            "is_banned",
+            False
+        )
+    ):
+
+        return
+
+    text = update.message.text
+
+    if text == "🎯 Tasks":
+
+        await tasks_menu(
+            update,
+            context
+        )
+
+    elif text == "💰 Balance":
+
+        await balance_menu(
+            update,
+            context
+        )
+
+    elif text == "💳 Withdraw":
+
+        await withdraw_menu(
+            update,
+            context
+        )
+
+    elif text == "👥 Refer":
+
+        await refer_menu(
+            update,
+            context
+        )
+
+    elif (
+        text == "👑 Admin Panel"
+        and user_id == ADMIN_ID
+    ):
+
+        await admin_panel(
+            update,
+            context
+        )
+
+
+# =========================
+# SAVE MANUAL SUBMISSION
+# =========================
+
+async def save_submission(
+    update,
+    context,
+    proof,
+    photo_file_id=None
+):
+
+    user_id = update.effective_user.id
+
+    task_id = context.user_data.get(
+        "submitting_task_id"
+    )
+
+    if not task_id:
+        return False
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True,
+            "task_mode": "manual"
+        }
+    )
+
+    if not task:
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ This task is no longer available."
+        )
+
+        return True
+
+    if users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    ):
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ You already completed this task."
+        )
+
+        return True
+
+    pending = submissions_collection.find_one(
+        {
+            "user_id": user_id,
+            "task_id": task_id,
+            "status": {
+                "$in": [
+                    "pending",
+                    "processing"
+                ]
+            }
+        }
+    )
+
+    if pending:
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "⏳ You already have a pending submission."
+        )
+
+        return True
+
+    submission = {
+        "user_id": user_id,
+        "task_id": task_id,
+        "proof": proof,
+        "status": "pending",
+        "created_at": now_utc()
+    }
+
+    if photo_file_id:
+
+        submission[
+            "photo_file_id"
+        ] = photo_file_id
+
+    try:
+
+        submissions_collection.insert_one(
+            submission
+        )
+
+    except PyMongoError:
+
+        await update.message.reply_text(
+            "❌ Could not submit proof. Try again."
+        )
+
+        return True
+
+    context.user_data.pop(
+        "submitting_task_id",
+        None
+    )
+
+    await update.message.reply_text(
+        (
+            "✅ Proof submitted successfully!\n"
+            "Admin will review it."
+        )
+    )
+
+    return True
+
+
+# =========================
+# PHOTO PROOF
+# =========================
+
+async def photo_proof_handler(
+    update,
+    context
+):
+
+    if context.user_data.get(
+        "submitting_task_id"
+    ):
+
+        proof = (
+            update.message.caption.strip()
+            if update.message.caption
+            else "Screenshot proof"
+        )
+
+        await save_submission(
+            update,
+            context,
+            proof,
+            update.message.photo[-1].file_id
+        )
+
+
+# =========================
+# TEXT HANDLER
+# =========================
+
+async def text_handler(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    if context.user_data.get(
+        "submitting_task_id"
+    ):
+
+        await save_submission(
+            update,
+            context,
+            update.message.text.strip()
+        )
+
+        return
+
+    if (
+        context.user_data.get(
+            "admin_action"
+        )
+        and user_id == ADMIN_ID
+    ):
+
+        if await admin_text_action(
+            update,
+            context
+        ):
+
+            return
+
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        await process_withdraw(
+            update,
+            context
+        )
+
+        return
+
+    await menu_handler(
+        update,
+        context
+    )
+
+
+# =========================
+# CALLBACK ROUTER
+# =========================
+
+async def callback_router(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    data = query.data or ""
+
+    user_id = query.from_user.id
+
+
+    # Global join verification
+    if data == "check_join":
+
+        await check_join(
+            update,
+            context
+        )
+
+        return
+
+
+    # Admin callbacks first
+    if user_id == ADMIN_ID:
+
+        admin_prefixes = (
+            "admin_",
+            "task_add",
+            "tasktype_",
+            "task_list",
+            "admintask_",
+            "sub_",
+            "wd_",
+            "user_",
+            "balance_",
+            "set_"
+        )
+
+        if data.startswith(
+            admin_prefixes
+        ):
+
+            await admin_callback(
+                update,
+                context
+            )
+
+            return
+
+
+    # User task details
+    if (
+        data.startswith("task_")
+        and data not in {
+            "task_add",
+            "task_list_admin"
+        }
+    ):
+
+        await task_details(
+            update,
+            context
+        )
+
+        return
+
+
+    # Auto task
+    if data.startswith(
+        "complete_"
+    ):
+
+        await complete_task(
+            update,
+            context
+        )
+
+        return
+
+
+    # Manual task
+    if data.startswith(
+        "submitproof_"
+    ):
+
+        await request_proof_input(
+            update,
+            context
+        )
+
+        return
+
+
+    try:
+
+        await query.answer()
+
+    except Exception:
+        pass
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        repr(
+            context.error
+        )
+    )
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    print(
+        "Connecting to MongoDB..."
+    )
+
+    mongo_client.admin.command(
+        "ping"
+    )
+
+    print(
+        "MongoDB connected successfully."
+    )
+
+    setup_database()
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_router
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            photo_proof_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is running "
+        "with fixed task/admin system..."
+    )
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
+
+
+# =========================
+# START BOT
+# =========================
+
+if __name__ == "__main__":
+
+    main()
