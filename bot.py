@@ -298,3 +298,161 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
     await send_main_menu(context.bot, user_id)
+async def balance_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    await update.message.reply_text(
+        f"💰 <b>Your Balance</b>\n\n💎 Balance: <b>{balance:.6f} {TOKEN_NAME}</b>",
+        parse_mode="HTML"
+    )
+    
+async def tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tasks = list(tasks_collection.find({"active": True}).sort("created_at", -1))
+
+    if not tasks:
+        await update.message.reply_text(
+            "🎯 <b>Tasks</b>\n\nNo tasks are available right now.",
+            parse_mode="HTML"
+        )
+        return
+
+    buttons = []
+    for task in tasks:
+        total_slots = int(task.get("total_slots", 0) or 0)
+        completed_slots = int(task.get("completed_slots", 0) or 0)
+        remaining = total_slots - completed_slots
+
+        if total_slots > 0 and remaining <= 0:
+            tasks_collection.update_one({"task_id": task["task_id"]}, {"$set": {"active": False}})
+            continue
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"🎯 {escape(str(task.get('title', 'Task')))}",
+                callback_data=f"task_{task['task_id']}"
+            )
+        ])
+
+    if not buttons:
+        await update.message.reply_text(
+            "🎯 <b>Tasks</b>\n\nNo tasks are available right now.",
+            parse_mode="HTML"
+        )
+        return
+
+    await update.message.reply_text(
+        "🎯 <b>Available Tasks</b>",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML"
+    )
+
+
+async def task_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    task_id = query.data.replace("task_", "", 1)
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+
+    if not task:
+        await query.answer("❌ Task not found or inactive.", show_alert=True)
+        return
+
+    keyboard = []
+    link = task.get("link")
+    if link:
+        keyboard.append([InlineKeyboardButton("🔗 Open Task Link", url=link)])
+
+    task_type = task.get("task_type", "auto")
+    if task_type == "auto":
+        keyboard.append([InlineKeyboardButton("✅ Auto Verify & Complete", callback_data=f"complete_{task_id}")])
+    else:
+        keyboard.append([InlineKeyboardButton("📤 Submit Proof (Manual)", callback_data=f"submitproof_{task_id}")])
+
+    await query.answer()
+    await query.edit_message_text(
+        (
+            f"🎯 <b>{escape(str(task.get('title', 'Task')))}</b>\n\n"
+            f"📝 {escape(str(task.get('description', '')))}\n\n"
+            f"🔹 Type: <b>{escape(str(task_type).upper())}</b>\n"
+            f"💰 Reward: <b>{float(task.get('reward', 0)):.6f} {TOKEN_NAME}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
+
+
+async def complete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    task_id = query.data.replace("complete_", "", 1)
+
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+    if not task:
+        await query.answer("❌ Task is no longer available.", show_alert=True)
+        return
+
+    task_link = str(task.get("link", "") or "").strip()
+    if "t.me/" in task_link:
+        try:
+            parsed = urlparse(task_link)
+            channel_path = parsed.path.strip("/").split("/")[0]
+            channel_username = "@" + channel_path if channel_path else ""
+
+            if not channel_username:
+                raise ValueError("Invalid Telegram channel link")
+
+            member = await context.bot.get_chat_member(channel_username, user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                await query.answer("❌ You have not joined the target channel yet! Join first.", show_alert=True)
+                return
+        except Exception:
+            await query.answer("❌ Could not verify this Telegram task. Please contact admin.", show_alert=True)
+            return
+
+    already_done = users_collection.find_one({"user_id": user_id, "completed_tasks": task_id})
+    if already_done:
+        await query.answer("❌ You already completed this task.", show_alert=True)
+        return
+
+    reward = float(task.get("reward", 0))
+    total_slots = int(task.get("total_slots", 0) or 0)
+
+    slot_filter = {"task_id": task_id, "active": True}
+    if total_slots > 0:
+        slot_filter["$expr"] = {"$lt": [{"$ifNull": ["$completed_slots", 0]}, "$total_slots"]}
+
+    slot_result = tasks_collection.update_one(slot_filter, {"$inc": {"completed_slots": 1}})
+    if slot_result.modified_count != 1:
+        tasks_collection.update_one(
+            {"task_id": task_id, "active": True, "total_slots": {"$gt": 0}},
+            {"$set": {"active": False}}
+        )
+        await query.answer("❌ Task slots are finished.", show_alert=True)
+        return
+
+    user_result = users_collection.update_one(
+        {"user_id": user_id, "completed_tasks": {"$ne": task_id}},
+        {"$inc": {"balance": reward}, "$addToSet": {"completed_tasks": task_id}}
+    )
+
+    if user_result.modified_count != 1:
+        tasks_collection.update_one({"task_id": task_id}, {"$inc": {"completed_slots": -1}})
+        await query.answer("❌ You already completed this task.", show_alert=True)
+        return
+
+    if total_slots > 0:
+        tasks_collection.update_one(
+            {"task_id": task_id, "completed_slots": {"$gte": total_slots}},
+            {"$set": {"active": False}}
+        )
+
+    await check_and_pay_referral(user_id, context)
+    await query.answer("✅ Task completed successfully!", show_alert=True)
+    await query.edit_message_text(
+        (
+            "🎉 <b>Task Completed!</b>\n\n"
+            f"💰 Reward: <b>+{reward:.6f} {TOKEN_NAME}</b>\n\n"
+            "The reward has been added to your balance."
+        ),
+        parse_mode="HTML"
+    )
+    
