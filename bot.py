@@ -599,3 +599,678 @@ async def check_join(
         context.bot,
         user_id
     )
+# =========================
+# BALANCE
+# =========================
+
+async def balance_menu(
+    update,
+    context
+):
+
+    balance = get_balance(
+        update.effective_user.id
+    )
+
+    await update.message.reply_text(
+        (
+            "💰 <b>Your Balance</b>\n\n"
+            f"💎 Balance: <b>{balance:.6f} "
+            f"{TOKEN_NAME}</b>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# TASK MENU
+# =========================
+
+async def tasks_menu(
+    update,
+    context
+):
+
+    tasks = list(
+        tasks_collection.find(
+            {
+                "active": True
+            }
+        ).sort(
+            "created_at",
+            -1
+        )
+    )
+
+    buttons = []
+
+    for task in tasks:
+
+        total = int(
+            task.get(
+                "total_slots",
+                0
+            ) or 0
+        )
+
+        completed = int(
+            task.get(
+                "completed_slots",
+                0
+            ) or 0
+        )
+
+        if (
+            total > 0
+            and completed >= total
+        ):
+
+            tasks_collection.update_one(
+                {
+                    "task_id": task["task_id"]
+                },
+                {
+                    "$set": {
+                        "active": False
+                    }
+                }
+            )
+
+            continue
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    (
+                        "🎯 "
+                        + escape(
+                            str(
+                                task.get(
+                                    "title",
+                                    "Task"
+                                )
+                            )
+                        )
+                    ),
+                    callback_data=(
+                        f"task_{task['task_id']}"
+                    )
+                )
+            ]
+        )
+
+    if not buttons:
+
+        await update.message.reply_text(
+            (
+                "🎯 <b>Tasks</b>\n\n"
+                "No tasks are available right now."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    await update.message.reply_text(
+        "🎯 <b>Available Tasks</b>",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# TASK DETAILS
+# =========================
+
+async def task_details(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    task_id = query.data.replace(
+        "task_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task not found or inactive.",
+            show_alert=True
+        )
+
+        return
+
+    total = int(
+        task.get(
+            "total_slots",
+            0
+        ) or 0
+    )
+
+    completed = int(
+        task.get(
+            "completed_slots",
+            0
+        ) or 0
+    )
+
+    if total <= 0:
+
+        remaining = "Unlimited"
+
+    else:
+
+        remaining = max(
+            total - completed,
+            0
+        )
+
+    mode = task.get(
+        "task_mode",
+        "auto"
+    )
+
+    keyboard = []
+
+    if task.get("link"):
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "🔗 Open Task Link",
+                    url=task["link"]
+                )
+            ]
+        )
+
+    if mode == "auto":
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "✅ Verify & Complete",
+                    callback_data=(
+                        f"complete_{task_id}"
+                    )
+                )
+            ]
+        )
+
+    else:
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "📤 Submit Proof",
+                    callback_data=(
+                        f"submitproof_{task_id}"
+                    )
+                )
+            ]
+        )
+
+    await query.answer()
+
+    await query.edit_message_text(
+        (
+            f"🎯 <b>{escape(str(task.get('title', 'Task')))}</b>\n\n"
+            f"📝 {escape(str(task.get('description', '')))}\n\n"
+            f"🔹 Type: <b>{escape(str(task.get('category', 'Custom')))}</b>\n"
+            f"🔐 Verification: <b>{mode.upper()}</b>\n"
+            f"💰 Reward: <b>{float(task.get('reward', 0)):.6f} {TOKEN_NAME}</b>\n"
+            f"👥 Slots remaining: <b>{remaining}</b>"
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# TASK SLOT RESERVATION
+# =========================
+
+async def reserve_task_slot(
+    task_id
+):
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+        return False, None
+
+    total = int(
+        task.get(
+            "total_slots",
+            0
+        ) or 0
+    )
+
+    if total > 0:
+
+        result = tasks_collection.update_one(
+            {
+                "task_id": task_id,
+                "active": True,
+                "$expr": {
+                    "$lt": [
+                        {
+                            "$ifNull": [
+                                "$completed_slots",
+                                0
+                            ]
+                        },
+                        "$total_slots"
+                    ]
+                }
+            },
+            {
+                "$inc": {
+                    "completed_slots": 1
+                }
+            }
+        )
+
+    else:
+
+        result = tasks_collection.update_one(
+            {
+                "task_id": task_id,
+                "active": True
+            },
+            {
+                "$inc": {
+                    "completed_slots": 1
+                }
+            }
+        )
+
+    if result.modified_count != 1:
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id,
+                "active": True,
+                "total_slots": {
+                    "$gt": 0
+                }
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+        return False, task
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id
+        }
+    )
+
+    if (
+        total > 0
+        and int(
+            task.get(
+                "completed_slots",
+                0
+            )
+        ) >= total
+    ):
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+    return True, task
+
+
+def rollback_task_slot(
+    task_id
+):
+
+    tasks_collection.update_one(
+        {
+            "task_id": task_id,
+            "completed_slots": {
+                "$gt": 0
+            }
+        },
+        {
+            "$inc": {
+                "completed_slots": -1
+            },
+            "$set": {
+                "active": True
+            }
+        }
+    )
+
+
+# =========================
+# AUTO TASK COMPLETE
+# =========================
+
+async def complete_task(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    task_id = query.data.replace(
+        "complete_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if (
+        not task
+        or task.get(
+            "task_mode",
+            "auto"
+        ) != "auto"
+    ):
+
+        await query.answer(
+            "❌ This task is not available for automatic verification.",
+            show_alert=True
+        )
+
+        return
+
+    if users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    ):
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    category = task.get(
+        "category",
+        "Telegram Channel Join"
+    )
+
+    # Only Telegram Channel Join uses auto verification
+    if category == "Telegram Channel Join":
+
+        link = str(
+            task.get(
+                "link",
+                ""
+            )
+        ).strip()
+
+        parsed = urlparse(
+            link
+        )
+
+        path = (
+            parsed.path.strip(
+                "/"
+            ).split(
+                "/"
+            )[0]
+            if parsed.path
+            else ""
+        )
+
+        valid_prefixes = (
+            "https://t.me/",
+            "http://t.me/",
+            "https://telegram.me/",
+            "http://telegram.me/"
+        )
+
+        if (
+            not path
+            or not link.startswith(
+                valid_prefixes
+            )
+        ):
+
+            await query.answer(
+                "❌ Invalid Telegram channel link.",
+                show_alert=True
+            )
+
+            return
+
+        try:
+
+            member = await context.bot.get_chat_member(
+                "@" + path,
+                user_id
+            )
+
+            if member.status not in {
+                "member",
+                "administrator",
+                "creator"
+            }:
+
+                await query.answer(
+                    "❌ Join the target channel first.",
+                    show_alert=True
+                )
+
+                return
+
+        except Exception:
+
+            await query.answer(
+                "❌ Could not verify this Telegram task.",
+                show_alert=True
+            )
+
+            return
+
+    else:
+
+        await query.answer(
+            "❌ Automatic verification is only for Telegram Channel Join tasks.",
+            show_alert=True
+        )
+
+        return
+
+    reserved, _ = await reserve_task_slot(
+        task_id
+    )
+
+    if not reserved:
+
+        await query.answer(
+            "❌ Task slots are finished.",
+            show_alert=True
+        )
+
+        return
+
+    reward = float(
+        task.get(
+            "reward",
+            0
+        )
+    )
+
+    user_result = users_collection.update_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": {
+                "$ne": task_id
+            }
+        },
+        {
+            "$inc": {
+                "balance": reward
+            },
+            "$addToSet": {
+                "completed_tasks": task_id
+            }
+        }
+    )
+
+    if user_result.modified_count != 1:
+
+        rollback_task_slot(
+            task_id
+        )
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    await check_and_pay_referral(
+        user_id,
+        context
+    )
+
+    await query.answer(
+        "✅ Task completed!",
+        show_alert=True
+    )
+
+    await query.edit_message_text(
+        (
+            "🎉 <b>Task Completed!</b>\n\n"
+            f"💰 Reward: <b>+{reward:.6f} "
+            f"{TOKEN_NAME}</b>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# MANUAL PROOF REQUEST
+# =========================
+
+async def request_proof_input(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    task_id = query.data.replace(
+        "submitproof_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True,
+            "task_mode": "manual"
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task is not available.",
+            show_alert=True
+        )
+
+        return
+
+    if users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    ):
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    pending = submissions_collection.find_one(
+        {
+            "user_id": user_id,
+            "task_id": task_id,
+            "status": {
+                "$in": [
+                    "pending",
+                    "processing"
+                ]
+            }
+        }
+    )
+
+    if pending:
+
+        await query.answer(
+            "⏳ You already have a pending submission.",
+            show_alert=True
+        )
+
+        return
+
+    context.user_data[
+        "submitting_task_id"
+    ] = task_id
+
+    await query.answer()
+
+    await query.edit_message_text(
+        (
+            "📤 <b>Submit Proof</b>\n\n"
+            f"Task: <b>{escape(str(task.get('title')))}</b>\n\n"
+            "Send text, link, or screenshot proof."
+        ),
+        parse_mode="HTML"
+        )
