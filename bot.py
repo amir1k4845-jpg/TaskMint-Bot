@@ -1757,7 +1757,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await balance_action_callback(update, context)
         return
 
-        if user_id == ADMIN_ID and any(data.startswith(p) for p in ["admin_", "task_add", "task_list", "admintask_", "sub_", "wd_", "user_", "balance_", "set_"]):
+    if user_id == ADMIN_ID and any(data.startswith(p) for p in ["admin_", "task_add", "task_list", "admintask_", "sub_", "wd_", "user_", "balance_", "set_"]):
         await admin_callback(update, context)
         return
         
