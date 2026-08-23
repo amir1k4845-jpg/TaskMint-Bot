@@ -81,3 +81,91 @@ tasks_collection = db["tasks"]
 withdrawals_collection = db["withdrawals"]
 submissions_collection = db["task_submissions"]
 settings_collection = db["settings"]
+def setup_database():
+    users_collection.create_index("user_id", unique=True)
+    tasks_collection.create_index("task_id", unique=True)
+    withdrawals_collection.create_index("user_id")
+    withdrawals_collection.create_index("status")
+    submissions_collection.create_index("user_id")
+    submissions_collection.create_index("task_id")
+    settings_collection.create_index("key", unique=True)
+
+    print("MongoDB database ready.")
+
+
+def get_setting(key, default_value):
+    setting = settings_collection.find_one({"key": key})
+    if setting:
+        return setting.get("value", default_value)
+    return default_value
+
+
+def update_setting(key, value):
+    settings_collection.update_one(
+        {"key": key},
+        {"$set": {"value": value}},
+        upsert=True
+    )
+
+
+def create_or_update_user(user, referrer_id=None):
+    now = datetime.now(timezone.utc)
+    existing_user = users_collection.find_one({"user_id": user.id})
+
+    if not existing_user:
+        ref_by = None
+        if referrer_id and referrer_id != user.id:
+            ref_user = users_collection.find_one({"user_id": referrer_id})
+            if ref_user:
+                ref_by = referrer_id
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"referrals": 1}}
+                )
+
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                },
+                "$setOnInsert": {
+                    "user_id": user.id,
+                    "balance": 0.0,
+                    "referrals": 0,
+                    "referred_by": ref_by,
+                    "ref_bonus_paid": False,
+                    "completed_tasks": [],
+                    "is_banned": False,
+                    "created_at": now
+                }
+            },
+            upsert=True
+        )
+    else:
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                }
+            }
+        )
+
+
+def get_user(user_id):
+    return users_collection.find_one({"user_id": user_id})
+
+
+def get_balance(user_id):
+    user = get_user(user_id)
+    if not user:
+        return 0.0
+    return float(user.get("balance", 0.0))
+        
