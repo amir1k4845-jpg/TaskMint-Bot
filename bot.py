@@ -1918,3 +1918,625 @@ async def admin_callback(
         )
 
         return
+    # =====================
+    # TASK LIST
+    # =====================
+
+    if data == "task_list_admin":
+
+        tasks = list(
+            tasks_collection.find(
+                {}
+            ).sort(
+                "created_at",
+                -1
+            ).limit(20)
+        )
+
+        if not tasks:
+
+            await query.edit_message_text(
+                (
+                    "📋 <b>Task List</b>\n\n"
+                    "No tasks found."
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Back",
+                                callback_data="admin_tasks"
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for task in tasks:
+
+            status = (
+                "🟢"
+                if task.get("active")
+                else "🔴"
+            )
+
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        (
+                            f"{status} "
+                            f"{task.get('title', 'Task')}"
+                        ),
+                        callback_data=(
+                            f"admintask_view_"
+                            f"{task['task_id']}"
+                        )
+                    )
+                ]
+            )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="admin_tasks"
+                )
+            ]
+        )
+
+        await query.edit_message_text(
+            (
+                "📋 <b>Tasks</b>\n\n"
+                "Select a task:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # VIEW TASK
+    # =====================
+
+    if data.startswith(
+        "admintask_view_"
+    ):
+
+        tid = data.replace(
+            "admintask_view_",
+            "",
+            1
+        )
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": tid
+            }
+        )
+
+        if not task:
+
+            await query.answer(
+                "❌ Task not found.",
+                show_alert=True
+            )
+
+            return
+
+        total = int(
+            task.get(
+                "total_slots",
+                0
+            ) or 0
+        )
+
+        completed = int(
+            task.get(
+                "completed_slots",
+                0
+            ) or 0
+        )
+
+        slot_text = (
+            "Unlimited"
+            if total <= 0
+            else f"{completed}/{total}"
+        )
+
+        await query.edit_message_text(
+            (
+                f"🎯 <b>{escape(str(task.get('title')))}</b>\n\n"
+                f"📝 {escape(str(task.get('description')))}\n"
+                f"🔗 {escape(str(task.get('link')))}\n"
+                f"🔹 Type: <b>{escape(str(task.get('category')))}</b>\n"
+                f"🔐 Verification: "
+                f"<b>{task.get('task_mode', 'manual').upper()}</b>\n"
+                f"💰 Reward: "
+                f"<b>{float(task.get('reward', 0)):.6f} {TOKEN_NAME}</b>\n"
+                f"👥 Slots: <b>{slot_text}</b>\n"
+                f"📌 Status: "
+                f"<b>{'Active' if task.get('active') else 'Inactive'}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            (
+                                "⏸ Deactivate"
+                                if task.get("active")
+                                else
+                                "▶️ Activate"
+                            ),
+                            callback_data=(
+                                f"admintask_toggle_{tid}"
+                            )
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "❌ Delete",
+                            callback_data=(
+                                f"admintask_del_{tid}"
+                            )
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="task_list_admin"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # TOGGLE TASK
+    # =====================
+
+    if data.startswith(
+        "admintask_toggle_"
+    ):
+
+        tid = data.replace(
+            "admintask_toggle_",
+            "",
+            1
+        )
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": tid
+            }
+        )
+
+        if task:
+
+            tasks_collection.update_one(
+                {
+                    "task_id": tid
+                },
+                {
+                    "$set": {
+                        "active": not bool(
+                            task.get(
+                                "active"
+                            )
+                        )
+                    }
+                }
+            )
+
+        await query.answer(
+            "✅ Status updated!",
+            show_alert=True
+        )
+
+        return
+
+
+    # =====================
+    # DELETE TASK
+    # =====================
+
+    if data.startswith(
+        "admintask_del_"
+    ):
+
+        tid = data.replace(
+            "admintask_del_",
+            "",
+            1
+        )
+
+        tasks_collection.delete_one(
+            {
+                "task_id": tid
+            }
+        )
+
+        await query.answer(
+            "✅ Task deleted.",
+            show_alert=True
+        )
+
+        await show_admin_tasks(
+            query
+        )
+
+        return
+
+
+    # =====================
+    # WITHDRAWALS
+    # =====================
+
+    if data == "admin_withdrawals":
+
+        items = list(
+            withdrawals_collection.find(
+                {
+                    "status": "pending"
+                }
+            ).sort(
+                "created_at",
+                -1
+            ).limit(20)
+        )
+
+        if not items:
+
+            await query.edit_message_text(
+                (
+                    "💳 <b>Pending Withdrawals</b>\n\n"
+                    "No pending withdrawals."
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Back",
+                                callback_data="admin_home"
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for withdrawal in items:
+
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        (
+                            f"User {withdrawal['user_id']} "
+                            f"• {withdrawal['amount']} "
+                            f"{TOKEN_NAME}"
+                        ),
+                        callback_data=(
+                            f"wd_manage_"
+                            f"{withdrawal['_id']}"
+                        )
+                    )
+                ]
+            )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="admin_home"
+                )
+            ]
+        )
+
+        await query.edit_message_text(
+            (
+                "💳 <b>Pending Withdrawals</b>\n\n"
+                "Select one:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # WITHDRAWAL DETAILS
+    # =====================
+
+    if data.startswith(
+        "wd_manage_"
+    ):
+
+        try:
+
+            wid = ObjectId(
+                data.replace(
+                    "wd_manage_",
+                    "",
+                    1
+                )
+            )
+
+            withdrawal = withdrawals_collection.find_one(
+                {
+                    "_id": wid,
+                    "status": "pending"
+                }
+            )
+
+        except Exception:
+
+            withdrawal = None
+
+        if not withdrawal:
+
+            await query.answer(
+                "❌ Withdrawal not found or already processed.",
+                show_alert=True
+            )
+
+            return
+
+        await query.edit_message_text(
+            (
+                "💳 <b>Withdrawal Details</b>\n\n"
+                f"👤 User: "
+                f"<code>{withdrawal['user_id']}</code>\n"
+                f"💰 Amount: "
+                f"<b>{withdrawal['amount']} {TOKEN_NAME}</b>\n"
+                f"👛 Wallet: "
+                f"<code>{escape(str(withdrawal['wallet']))}</code>"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            "✅ Mark Paid",
+                            callback_data=(
+                                f"wd_pay_{withdrawal['_id']}"
+                            )
+                        ),
+
+                        InlineKeyboardButton(
+                            "❌ Reject & Refund",
+                            callback_data=(
+                                f"wd_ref_{withdrawal['_id']}"
+                            )
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_withdrawals"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # MARK WITHDRAWAL PAID
+    # =====================
+
+    if data.startswith(
+        "wd_pay_"
+    ):
+
+        try:
+
+            wid = ObjectId(
+                data.replace(
+                    "wd_pay_",
+                    "",
+                    1
+                )
+            )
+
+            result = withdrawals_collection.update_one(
+                {
+                    "_id": wid,
+                    "status": "pending"
+                },
+                {
+                    "$set": {
+                        "status": "paid",
+                        "updated_at": now_utc()
+                    }
+                }
+            )
+
+            if result.modified_count != 1:
+
+                await query.answer(
+                    "⚠️ Already processed.",
+                    show_alert=True
+                )
+
+                return
+
+            withdrawal = withdrawals_collection.find_one(
+                {
+                    "_id": wid
+                }
+            )
+
+            if withdrawal:
+
+                try:
+
+                    await context.bot.send_message(
+                        withdrawal["user_id"],
+                        (
+                            "✅ Your withdrawal of "
+                            f"<b>{withdrawal['amount']} "
+                            f"{TOKEN_NAME}</b> has been paid!"
+                        ),
+                        parse_mode="HTML"
+                    )
+
+                except Exception:
+                    pass
+
+            await query.answer(
+                "✅ Marked as paid!",
+                show_alert=True
+            )
+
+            await query.edit_message_text(
+                (
+                    "✅ <b>Withdrawal marked as paid.</b>"
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Withdrawals",
+                                callback_data="admin_withdrawals"
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+
+            await query.answer(
+                "❌ Error.",
+                show_alert=True
+            )
+
+        return
+
+
+    # =====================
+    # REJECT WITHDRAWAL
+    # =====================
+
+    if data.startswith(
+        "wd_ref_"
+    ):
+
+        try:
+
+            wid = ObjectId(
+                data.replace(
+                    "wd_ref_",
+                    "",
+                    1
+                )
+            )
+
+            withdrawal = withdrawals_collection.find_one_and_update(
+                {
+                    "_id": wid,
+                    "status": "pending"
+                },
+                {
+                    "$set": {
+                        "status": "rejected",
+                        "updated_at": now_utc()
+                    }
+                }
+            )
+
+            if not withdrawal:
+
+                await query.answer(
+                    "⚠️ Already processed.",
+                    show_alert=True
+                )
+
+                return
+
+            users_collection.update_one(
+                {
+                    "user_id": withdrawal["user_id"]
+                },
+                {
+                    "$inc": {
+                        "balance": withdrawal["amount"]
+                    }
+                }
+            )
+
+            try:
+
+                await context.bot.send_message(
+                    withdrawal["user_id"],
+                    (
+                        "❌ Your withdrawal of "
+                        f"<b>{withdrawal['amount']} "
+                        f"{TOKEN_NAME}</b> was rejected "
+                        "and refunded."
+                    ),
+                    parse_mode="HTML"
+                )
+
+            except Exception:
+                pass
+
+            await query.answer(
+                "✅ Rejected and refunded!",
+                show_alert=True
+            )
+
+            await query.edit_message_text(
+                (
+                    "❌ <b>Withdrawal rejected and refunded.</b>"
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Withdrawals",
+                                callback_data="admin_withdrawals"
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+
+            await query.answer(
+                "❌ Error.",
+                show_alert=True
+            )
+
+        return
