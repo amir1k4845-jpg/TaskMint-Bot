@@ -2540,3 +2540,639 @@ async def admin_callback(
             )
 
         return
+    # =====================
+    # SUBMISSIONS
+    # =====================
+
+    if data == "admin_submissions":
+
+        submissions = list(
+            submissions_collection.find(
+                {
+                    "status": "pending"
+                }
+            ).sort(
+                "created_at",
+                -1
+            ).limit(20)
+        )
+
+        if not submissions:
+
+            await query.edit_message_text(
+                (
+                    "📥 <b>Pending Submissions</b>\n\n"
+                    "No pending submissions."
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "🔙 Back",
+                                callback_data="admin_home"
+                            )
+                        ]
+                    ]
+                ),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for submission in submissions:
+
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        (
+                            f"User {submission['user_id']} "
+                            f"• {submission['task_id']}"
+                        ),
+                        callback_data=(
+                            f"sub_manage_"
+                            f"{submission['_id']}"
+                        )
+                    )
+                ]
+            )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="admin_home"
+                )
+            ]
+        )
+
+        await query.edit_message_text(
+            (
+                "📥 <b>Pending Submissions</b>\n\n"
+                "Select one:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # SUBMISSION DETAILS
+    # =====================
+
+    if data.startswith(
+        "sub_manage_"
+    ):
+
+        try:
+
+            sid = ObjectId(
+                data.replace(
+                    "sub_manage_",
+                    "",
+                    1
+                )
+            )
+
+            submission = submissions_collection.find_one(
+                {
+                    "_id": sid
+                }
+            )
+
+        except Exception:
+
+            submission = None
+
+        if not submission:
+
+            await query.answer(
+                "❌ Submission not found.",
+                show_alert=True
+            )
+
+            return
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": submission["task_id"]
+            }
+        )
+
+        task_name = (
+            task.get(
+                "title",
+                "Unknown"
+            )
+            if task
+            else "Unknown"
+        )
+
+        proof = escape(
+            str(
+                submission.get(
+                    "proof",
+                    ""
+                )
+            )
+        )
+
+        photo_note = ""
+
+        if submission.get(
+            "photo_file_id"
+        ):
+
+            photo_note = (
+                "\n📷 Screenshot attached."
+            )
+
+        await query.edit_message_text(
+            (
+                "📥 <b>Submission Details</b>\n\n"
+                f"👤 User: "
+                f"<code>{submission['user_id']}</code>\n"
+                f"🎯 Task: "
+                f"<b>{escape(str(task_name))}</b>\n"
+                f"📄 Proof: "
+                f"<code>{proof}</code>"
+                f"{photo_note}"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            "✅ Approve",
+                            callback_data=(
+                                f"sub_approve_{submission['_id']}"
+                            )
+                        ),
+
+                        InlineKeyboardButton(
+                            "❌ Reject",
+                            callback_data=(
+                                f"sub_reject_{submission['_id']}"
+                            )
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # APPROVE SUBMISSION
+    # =====================
+
+    if data.startswith(
+        "sub_approve_"
+    ):
+
+        sid = data.replace(
+            "sub_approve_",
+            "",
+            1
+        )
+
+        await approve_submission(
+            query,
+            context,
+            sid
+        )
+
+        return
+
+
+    # =====================
+    # REJECT SUBMISSION
+    # =====================
+
+    if data.startswith(
+        "sub_reject_"
+    ):
+
+        sid = data.replace(
+            "sub_reject_",
+            "",
+            1
+        )
+
+        await reject_submission(
+            query,
+            context,
+            sid
+        )
+
+        return
+
+
+    # =====================
+    # USER MANAGEMENT
+    # =====================
+
+    if data == "admin_users":
+
+        total = users_collection.count_documents(
+            {}
+        )
+
+        await query.edit_message_text(
+            (
+                "👥 <b>User Management</b>\n\n"
+                f"Total Users: <b>{total}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            "🚫 Ban User",
+                            callback_data="user_ban"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔓 Unban User",
+                            callback_data="user_unban"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "user_ban":
+
+        context.user_data[
+            "admin_action"
+        ] = "user_ban_action"
+
+        await query.edit_message_text(
+            "🚫 Send User ID to ban:",
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "user_unban":
+
+        context.user_data[
+            "admin_action"
+        ] = "user_unban_action"
+
+        await query.edit_message_text(
+            "🔓 Send User ID to unban:",
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # BALANCE MANAGEMENT
+    # =====================
+
+    if data == "admin_balance":
+
+        await query.edit_message_text(
+            "💰 <b>Balance Management</b>",
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            "➕ Add POL",
+                            callback_data="balance_add"
+                        ),
+
+                        InlineKeyboardButton(
+                            "➖ Remove POL",
+                            callback_data="balance_remove"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔎 Check Balance",
+                            callback_data="balance_check"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "balance_add":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_add"
+
+        await query.edit_message_text(
+            (
+                "➕ <b>Add POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "balance_remove":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_remove"
+
+        await query.edit_message_text(
+            (
+                "➖ <b>Remove POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "balance_check":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_check"
+
+        await query.edit_message_text(
+            (
+                "🔎 <b>Check Balance</b>\n\n"
+                "Send User ID."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # SETTINGS
+    # =====================
+
+    if data == "admin_settings":
+
+        minimum = float(
+            get_setting(
+                "min_withdraw",
+                DEFAULT_MIN_WITHDRAW
+            )
+        )
+
+        commission = float(
+            get_setting(
+                "ref_commission",
+                DEFAULT_REF_COMMISSION
+            )
+        )
+
+        await query.edit_message_text(
+            (
+                "⚙️ <b>Bot Settings</b>\n\n"
+                f"📌 Min Withdraw: "
+                f"<b>{minimum} {TOKEN_NAME}</b>\n"
+                f"🎁 Ref Commission: "
+                f"<b>{commission} {TOKEN_NAME}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+
+                    [
+                        InlineKeyboardButton(
+                            "✏️ Change Min Withdraw",
+                            callback_data="set_min_withdraw"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "✏️ Change Ref Commission",
+                            callback_data="set_ref_comm"
+                        )
+                    ],
+
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "set_min_withdraw":
+
+        context.user_data[
+            "admin_action"
+        ] = "update_min_withdraw"
+
+        await query.edit_message_text(
+            (
+                "📌 Send new minimum "
+                "withdraw amount:"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    if data == "set_ref_comm":
+
+        context.user_data[
+            "admin_action"
+        ] = "update_ref_comm"
+
+        await query.edit_message_text(
+            (
+                "🎁 Send new referral "
+                "commission amount:"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # BROADCAST
+    # =====================
+
+    if data == "admin_broadcast":
+
+        context.user_data[
+            "admin_action"
+        ] = "admin_broadcast_msg"
+
+        await query.edit_message_text(
+            (
+                "📢 <b>Broadcast</b>\n\n"
+                "Send the message to broadcast:"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================
+# APPROVE SUBMISSION
+# =========================
+
+async def approve_submission(
+    query,
+    context,
+    sid
+):
+
+    try:
+
+        oid = ObjectId(
+            sid
+        )
+
+        submission = submissions_collection.find_one_and_update(
+            {
+                "_id": oid,
+                "status": "pending"
+            },
+            {
+                "$set": {
+                    "status": "processing",
+                    "reviewed_at": now_utc()
+                }
+            }
+        )
+
+        if not submission:
+
+            await query.answer(
+                "⚠️ Already processed.",
+                show_alert=True
+            )
+
+            return
+
+        user_id = submission[
+            "user_id"
+        ]
+
+        task_id = submission[
+            "task_id"
+        ]
+
+        if users_collection.find_one(
+            {
+                "user_id": user_id,
+                "completed_tasks": task_id
+            }
+        ):
+
+            submissions_collection.update_one(
+                {
+                    "_id": oid
+                },
+                {
+                    "$set": {
+                        "status": "rejected",
+                        "reason": "Already completed"
+                    }
+                }
+            )
+
+            await query.answer(
+                "⚠️ User already completed this task.",
+                show_alert=True
+            )
+
+            return
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": task_id,
+                "task_mode": "manual"
+            }
+        )
+
+        if (
+            not task
+            or not task.get(
+                "active",
+                False
+            )
+        ):
+
+            submissions_collection.update_one(
+                {
+                    "_id": oid
+                },
+                {
+                    "$set": {
+                        "status": "rejected",
+                        "reason": "Task inactive"
+                    }
+                }
+            )
+
+            await query.answer(
+                "❌ Task is inactive.",
+                show_alert=True
+            )
+
+            return
