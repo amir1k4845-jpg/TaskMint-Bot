@@ -934,3 +934,275 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📢 <b>Broadcast Message</b>\n\nSend the message you want to broadcast to all users:", parse_mode="HTML")
         return
         
+async def balance_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("❌ Unauthorized.", show_alert=True)
+        return
+    data = query.data
+    await query.answer()
+
+    if data == "balance_add":
+        context.user_data["admin_action"] = "balance_add"
+        await query.edit_message_text("➕ <b>Add POL</b>\n\nSend:\n<code>USER_ID AMOUNT</code>", parse_mode="HTML")
+        return
+    if data == "balance_remove":
+        context.user_data["admin_action"] = "balance_remove"
+        await query.edit_message_text("➖ <b>Remove POL</b>\n\nSend:\n<code>USER_ID AMOUNT</code>", parse_mode="HTML")
+        return
+    if data == "balance_check":
+        context.user_data["admin_action"] = "balance_check"
+        await query.edit_message_text("🔎 <b>Check Balance</b>\n\nSend User ID.", parse_mode="HTML")
+        return
+
+
+async def admin_text_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return False
+    action = context.user_data.get("admin_action")
+    text = update.message.text.strip()
+
+    if action == "admin_broadcast_msg":
+        context.user_data.clear()
+        all_users = users_collection.find({})
+        count = 0
+        await update.message.reply_text("📢 Broadcasting started...")
+        for u in all_users:
+            try:
+                await context.bot.send_message(u["user_id"], text, parse_mode="HTML")
+                count += 1
+            except Exception:
+                pass
+        await update.message.reply_text(f"✅ Broadcast complete. Sent to {count} users.")
+        return True
+
+    if action == "task_add_title":
+        context.user_data["new_task"]["title"] = text
+        context.user_data["admin_action"] = "task_add_desc"
+        await update.message.reply_text("📝 Send task description:")
+        return True
+
+    if action == "task_add_desc":
+        context.user_data["new_task"]["description"] = text
+        context.user_data["admin_action"] = "task_add_link"
+        await update.message.reply_text("🔗 Send task link (URL/Channel link):")
+        return True
+
+    if action == "task_add_link":
+        context.user_data["new_task"]["link"] = text
+        context.user_data["admin_action"] = "task_add_reward"
+        await update.message.reply_text(f"💰 Send reward amount (e.g., 0.1):")
+        return True
+
+    if action == "task_add_reward":
+        try:
+            reward = float(text)
+            context.user_data["new_task"]["reward"] = reward
+            context.user_data["admin_action"] = "task_add_slots"
+            await update.message.reply_text("👥 Send total slots (number, e.g. 100):")
+        except Exception:
+            await update.message.reply_text("❌ Invalid number. Send reward amount again:")
+        return True
+
+    if action == "task_add_slots":
+        try:
+            slots = int(text)
+            ntask = context.user_data.get("new_task")
+            tid = str(uuid.uuid4())[:8]
+            
+            tasks_collection.insert_one({
+                "task_id": tid,
+                "title": ntask["title"],
+                "description": ntask["description"],
+                "link": ntask["link"],
+                "reward": ntask["reward"],
+                "total_slots": slots,
+                "completed_slots": 0,
+                "task_type": "auto",
+                "active": True,
+                "created_at": datetime.now(timezone.utc)
+            })
+            context.user_data.clear()
+            await update.message.reply_text("✅ Task added successfully!")
+        except Exception:
+            await update.message.reply_text("❌ Error saving task. Send total slots again:")
+        return True
+
+    if action == "user_ban_action":
+        try:
+            uid = int(text)
+            users_collection.update_one({"user_id": uid}, {"$set": {"is_banned": True}})
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ User {uid} banned.")
+        except Exception:
+            await update.message.reply_text("❌ Invalid User ID.")
+        return True
+
+    if action == "user_unban_action":
+        try:
+            uid = int(text)
+            users_collection.update_one({"user_id": uid}, {"$set": {"is_banned": False}})
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ User {uid} unbanned.")
+        except Exception:
+            await update.message.reply_text("❌ Invalid User ID.")
+        return True
+
+    if action == "balance_add":
+        try:
+            parts = text.split()
+            target_id, amount = int(parts[0]), float(parts[1])
+            users_collection.update_one({"user_id": target_id}, {"$inc": {"balance": amount}})
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ Added {amount} POL to user {target_id}")
+        except Exception:
+            await update.message.reply_text("❌ Format: USER_ID AMOUNT")
+        return True
+
+    if action == "balance_remove":
+        try:
+            parts = text.split()
+            target_id, amount = int(parts[0]), float(parts[1])
+            users_collection.update_one({"user_id": target_id, "balance": {"$gte": amount}}, {"$inc": {"balance": -amount}})
+            context.user_data.clear()
+            await update.message.reply_text(f"✅ Removed {amount} POL from user {target_id}")
+        except Exception:
+            await update.message.reply_text("❌ Format: USER_ID AMOUNT")
+        return True
+
+    if action == "balance_check":
+        try:
+            target_id = int(text)
+            target_user = get_user(target_id)
+            bal = float(target_user.get("balance", 0.0)) if target_user else 0.0
+            context.user_data.clear()
+            await update.message.reply_text(f"🔎 User <code>{target_id}</code> Balance: <b>{bal:.6f} {TOKEN_NAME}</b>", parse_mode="HTML")
+        except Exception:
+            await update.message.reply_text("❌ User not found.")
+        return True
+
+    return False
+        
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+    db_user = get_user(user_id)
+    if db_user and db_user.get("is_banned", False):
+        return
+
+    if text == "🎯 Tasks":
+        await tasks_menu(update, context)
+    elif text == "💰 Balance":
+        await balance_menu(update, context)
+    elif text == "💳 Withdraw":
+        await withdraw_menu(update, context)
+    elif text == "👥 Refer":
+        await refer_menu(update, context)
+    elif text == "👑 Admin Panel" and user_id == ADMIN_ID:
+        await admin_panel(update, context)
+
+
+async def photo_proof_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    task_id = context.user_data.get("submitting_task_id")
+    if not task_id:
+        return
+
+    proof = update.message.caption.strip() if update.message.caption else "Screenshot proof"
+    submissions_collection.insert_one({
+        "user_id": user_id,
+        "task_id": task_id,
+        "proof": proof,
+        "photo_file_id": update.message.photo[-1].file_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc)
+    })
+    context.user_data.pop("submitting_task_id", None)
+    await update.message.reply_text("✅ Screenshot proof submitted successfully!")
+
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if context.user_data.get("submitting_task_id"):
+        proof_text = update.message.text.strip()
+        task_id = context.user_data.pop("submitting_task_id")
+        submissions_collection.insert_one({
+            "user_id": user_id,
+            "task_id": task_id,
+            "proof": proof_text,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc)
+        })
+        await update.message.reply_text("✅ Proof submitted successfully!")
+        return
+
+    if context.user_data.get("admin_action") and user_id == ADMIN_ID:
+        if await admin_text_action(update, context):
+            return
+
+    if context.user_data.get("withdraw_step"):
+        await process_withdraw(update, context)
+        return
+
+    await menu_handler(update, context)
+
+
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "check_join":
+        await check_join(update, context)
+        return
+    if data.startswith("task_") and not data.startswith("task_add"):
+        await task_details(update, context)
+        return
+    if data.startswith("complete_"):
+        await complete_task(update, context)
+        return
+    if data.startswith("submitproof_"):
+        await request_proof_input(update, context)
+        return
+    if data.startswith("balance_"):
+        await balance_action_callback(update, context)
+        return
+
+    if user_id == ADMIN_ID and any(data.startswith(p) for p in ["admin_", "task_add", "task_list", "admintask_", "sub_", "wd_", "user_", "balance_"]):
+        await admin_callback(update, context)
+        return
+
+
+async def error_handler(update, context):
+    print("Telegram error:", repr(context.error))
+
+
+def main():
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+
+    print("Connecting to MongoDB...")
+    mongo_client.admin.command("ping")
+    print("MongoDB connected successfully.")
+
+    setup_database()
+
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(callback_router))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_proof_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    application.add_error_handler(error_handler)
+
+    print("TaskMint Bot is running with all updated features...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()
+                      
