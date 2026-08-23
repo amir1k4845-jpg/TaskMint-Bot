@@ -703,3 +703,666 @@ async def task_details(
         ),
         parse_mode="HTML"
     )
+# =========================================================
+# AUTO TASK COMPLETION
+# =========================================================
+
+async def complete_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    task_id = query.data.replace(
+        "complete_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task is no longer available.",
+            show_alert=True
+        )
+
+        return
+
+    task_link = str(
+        task.get(
+            "link",
+            ""
+        ) or ""
+    ).strip()
+
+    if "t.me/" in task_link:
+
+        try:
+
+            parsed = urlparse(
+                task_link
+            )
+
+            channel_path = (
+                parsed.path
+                .strip("/")
+                .split("/")[0]
+            )
+
+            channel_username = (
+                "@"
+                + channel_path
+                if channel_path
+                else ""
+            )
+
+            if not channel_username:
+
+                raise ValueError(
+                    "Invalid Telegram channel link"
+                )
+
+            member = await context.bot.get_chat_member(
+                channel_username,
+                user_id
+            )
+
+            if member.status not in [
+                "member",
+                "administrator",
+                "creator"
+            ]:
+
+                await query.answer(
+                    "❌ You have not joined the target channel yet! Join first.",
+                    show_alert=True
+                )
+
+                return
+
+        except Exception:
+
+            await query.answer(
+                "❌ Could not verify this Telegram task. Please contact admin.",
+                show_alert=True
+            )
+
+            return
+
+    already_done = users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    )
+
+    if already_done:
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    reward = float(
+        task.get(
+            "reward",
+            0
+        )
+    )
+
+    total_slots = int(
+        task.get(
+            "total_slots",
+            0
+        ) or 0
+    )
+
+    slot_filter = {
+        "task_id": task_id,
+        "active": True
+    }
+
+    if total_slots > 0:
+
+        slot_filter["$expr"] = {
+            "$lt": [
+                {
+                    "$ifNull": [
+                        "$completed_slots",
+                        0
+                    ]
+                },
+                "$total_slots"
+            ]
+        }
+
+    slot_result = tasks_collection.update_one(
+        slot_filter,
+        {
+            "$inc": {
+                "completed_slots": 1
+            }
+        }
+    )
+
+    if slot_result.modified_count != 1:
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id,
+                "active": True,
+                "total_slots": {
+                    "$gt": 0
+                }
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+        await query.answer(
+            "❌ Task slots are finished.",
+            show_alert=True
+        )
+
+        return
+
+    user_result = users_collection.update_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": {
+                "$ne": task_id
+            }
+        },
+        {
+            "$inc": {
+                "balance": reward
+            },
+            "$addToSet": {
+                "completed_tasks": task_id
+            }
+        }
+    )
+
+    if user_result.modified_count != 1:
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id
+            },
+            {
+                "$inc": {
+                    "completed_slots": -1
+                }
+            }
+        )
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    if total_slots > 0:
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id,
+                "completed_slots": {
+                    "$gte": total_slots
+                }
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+    await check_and_pay_referral(
+        user_id,
+        context
+    )
+
+    await query.answer(
+        "✅ Task completed successfully!",
+        show_alert=True
+    )
+
+    await query.edit_message_text(
+        (
+            "🎉 <b>Task Completed!</b>\n\n"
+            f"💰 Reward: <b>+{reward:.6f} "
+            f"{TOKEN_NAME}</b>\n\n"
+            "The reward has been added to your balance."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# MANUAL TASK PROOF REQUEST
+# =========================================================
+
+async def request_proof_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    user_id = query.from_user.id
+
+    task_id = query.data.replace(
+        "submitproof_",
+        "",
+        1
+    )
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        await query.answer(
+            "❌ Task not available.",
+            show_alert=True
+        )
+
+        return
+
+    already_done = users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    )
+
+    if already_done:
+
+        await query.answer(
+            "❌ You already completed this task.",
+            show_alert=True
+        )
+
+        return
+
+    total_slots = int(
+        task.get(
+            "total_slots",
+            0
+        ) or 0
+    )
+
+    completed_slots = int(
+        task.get(
+            "completed_slots",
+            0
+        ) or 0
+    )
+
+    if (
+        total_slots > 0
+        and completed_slots >= total_slots
+    ):
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+        await query.answer(
+            "❌ Task slots are finished.",
+            show_alert=True
+        )
+
+        return
+
+    pending_sub = submissions_collection.find_one(
+        {
+            "user_id": user_id,
+            "task_id": task_id,
+            "status": "pending"
+        }
+    )
+
+    if pending_sub:
+
+        await query.answer(
+            "❌ You already have a pending submission for this task.",
+            show_alert=True
+        )
+
+        return
+
+    context.user_data[
+        "submitting_task_id"
+    ] = task_id
+
+    await query.answer()
+
+    await query.edit_message_text(
+        (
+            "📤 <b>Submit Manual Task Proof</b>\n\n"
+            f"Task: <b>{escape(str(task.get('title', 'Task')))}</b>\n\n"
+            "Please send your proof.\n"
+            "You can send text, username, link or screenshot."
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# REFER MENU
+# =========================================================
+
+async def refer_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    user = get_user(
+        user_id
+    )
+
+    referrals = (
+        user.get(
+            "referrals",
+            0
+        )
+        if user
+        else 0
+    )
+
+    ref_commission = float(
+        get_setting(
+            "ref_commission",
+            DEFAULT_REF_COMMISSION
+        )
+    )
+
+    bot_info = await context.bot.get_me()
+
+    referral_link = (
+        f"https://t.me/"
+        f"{bot_info.username}"
+        f"?start={user_id}"
+    )
+
+    await update.message.reply_text(
+        (
+            "👥 <b>Refer & Earn</b>\n\n"
+            f"👤 Referrals: <b>{referrals}</b>\n"
+            f"🎁 Commission: <b>{ref_commission} "
+            f"{TOKEN_NAME}</b> "
+            "(After referred user completes 4 tasks)\n\n"
+            "🔗 <b>Your Referral Link:</b>\n"
+            f"<code>{escape(referral_link)}</code>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# WITHDRAW
+# =========================================================
+
+async def withdraw_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    balance = get_balance(
+        user_id
+    )
+
+    min_withdraw = float(
+        get_setting(
+            "min_withdraw",
+            DEFAULT_MIN_WITHDRAW
+        )
+    )
+
+    context.user_data.clear()
+
+    if balance < min_withdraw:
+
+        await update.message.reply_text(
+            (
+                "💳 <b>POL Withdrawal</b>\n\n"
+                f"💰 Balance: <b>{balance:.6f} POL</b>\n"
+                f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\n"
+                "❌ Insufficient balance."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    context.user_data[
+        "withdraw_step"
+    ] = "amount"
+
+    await update.message.reply_text(
+        (
+            "💳 <b>POL Withdrawal</b>\n\n"
+            f"💰 Available: <b>{balance:.6f} POL</b>\n"
+            f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\n"
+            "Enter withdrawal amount:"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def process_withdraw(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text.strip()
+
+    step = context.user_data.get(
+        "withdraw_step"
+    )
+
+    min_withdraw = float(
+        get_setting(
+            "min_withdraw",
+            DEFAULT_MIN_WITHDRAW
+        )
+    )
+
+    if step == "amount":
+
+        try:
+
+            amount = float(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Enter a valid amount."
+            )
+
+            return
+
+        if amount <= 0:
+
+            await update.message.reply_text(
+                "❌ Amount must be greater than 0."
+            )
+
+            return
+
+        balance = get_balance(
+            user_id
+        )
+
+        if amount < min_withdraw:
+
+            await update.message.reply_text(
+                f"❌ Minimum is {min_withdraw} POL."
+            )
+
+            return
+
+        if amount > balance:
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return
+
+        context.user_data[
+            "withdraw_amount"
+        ] = amount
+
+        context.user_data[
+            "withdraw_step"
+        ] = "wallet"
+
+        await update.message.reply_text(
+            (
+                "👛 <b>POL Wallet</b>\n\n"
+                "Send your POL wallet address."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if step == "wallet":
+
+        wallet = text
+
+        amount = context.user_data.get(
+            "withdraw_amount"
+        )
+
+        if not amount:
+
+            context.user_data.clear()
+
+            return
+
+        if len(wallet) < 20:
+
+            await update.message.reply_text(
+                "❌ Please send a valid wallet address."
+            )
+
+            return
+
+        result = users_collection.update_one(
+            {
+                "user_id": user_id,
+                "balance": {
+                    "$gte": amount
+                }
+            },
+            {
+                "$inc": {
+                    "balance": -amount
+                }
+            }
+        )
+
+        if result.modified_count != 1:
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+        withdrawal = {
+            "user_id": user_id,
+            "amount": amount,
+            "token": TOKEN_NAME,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now
+        }
+
+        try:
+
+            result = withdrawals_collection.insert_one(
+                withdrawal
+            )
+
+        except PyMongoError:
+
+            users_collection.update_one(
+                {
+                    "user_id": user_id
+                },
+                {
+                    "$inc": {
+                        "balance": amount
+                    }
+                }
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Withdrawal failed."
+            )
+
+            return
+
+        wid = str(
+            result.inserted_id
+        )
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            (
+                "✅ <b>Withdrawal Submitted</b>\n\n"
+                f"🆔 ID: <code>{wid}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{escape(wallet)}</code>\n"
+                "📌 Status: <b>Pending</b>"
+            ),
+            parse_mode="HTML"
+            )
