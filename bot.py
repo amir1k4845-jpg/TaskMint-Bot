@@ -1218,23 +1218,28 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "task_list_admin":
-        tasks = list(tasks_collection.find({}).sort("created_at", -1).limit(10))
-        if not tasks:
-            await query.edit_message_text(
-                "📋 <b>Task List</b>\n\nNo tasks found.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")]]),
-                parse_mode="HTML"
-            )
-            return
-        buttons = []
-        for t in tasks:
-            status = "🟢" if t.get("active") else "🔴"
-            buttons.append([
-                InlineKeyboardButton(f"{status} {t.get('title')}", callback_data=f"admintask_view_{t['task_id']}")
-            ])
-        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")])
-        await query.edit_message_text("📋 <b>Task List (Click to Delete/Manage)</b>", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+        try:
+            tasks = list(tasks_collection.find({}).sort("created_at", -1).limit(10))
+            if not tasks:
+                await query.edit_message_text(
+                    "📋 <b>Task List</b>\n\nNo tasks found.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")]]),
+                    parse_mode="HTML"
+                )
+                return
+            buttons = []
+            for t in tasks:
+                status = "🟢" if t.get("active") else "🔴"
+                buttons.append([
+                    InlineKeyboardButton(f"{status} {t.get('title')}", callback_data=f"admintask_view_{t['task_id']}")
+                ])
+            buttons.append([InlineKeyboardButton("🔙 Back", callback_data="admin_tasks")])
+            await query.edit_message_text("📋 <b>Task List (Click to Delete/Manage)</b>", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+        except Exception as e:
+            print("Task list error:", e)
+            await query.answer("❌ Error loading tasks.", show_alert=True)
         return
+        
 
     if data.startswith("admintask_view_"):
         tid = data.replace("admintask_view_", "", 1)
