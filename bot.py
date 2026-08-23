@@ -2523,3 +2523,1429 @@ async def admin_callback(
         )
 
         return
+    # =====================================================
+    # APPROVE / REJECT WITHDRAWAL
+    # =====================================================
+
+    if (
+        data.startswith("wd_approve_")
+        or data.startswith("wd_reject_")
+    ):
+
+        parts = data.split("_")
+
+        action_type = parts[1]
+        wid = parts[2]
+
+        new_status = (
+            "approved"
+            if action_type == "approve"
+            else "rejected"
+        )
+
+        try:
+
+            wd = withdrawals_collection.find_one(
+                {
+                    "_id": ObjectId(wid),
+                    "status": "pending"
+                }
+            )
+
+        except Exception:
+
+            wd = None
+
+        if not wd:
+
+            await query.answer(
+                "Already processed or not found.",
+                show_alert=True
+            )
+
+            return
+
+        withdrawals_collection.update_one(
+            {
+                "_id": ObjectId(wid),
+                "status": "pending"
+            },
+            {
+                "$set": {
+                    "status": new_status,
+                    "updated_at": datetime.now(
+                        timezone.utc
+                    )
+                }
+            }
+        )
+
+        if new_status == "rejected":
+
+            users_collection.update_one(
+                {
+                    "user_id": wd["user_id"]
+                },
+                {
+                    "$inc": {
+                        "balance": wd["amount"]
+                    }
+                }
+            )
+
+            try:
+
+                await context.bot.send_message(
+                    wd["user_id"],
+                    "❌ Withdrawal rejected & refunded."
+                )
+
+            except Exception:
+                pass
+
+        else:
+
+            try:
+
+                await context.bot.send_message(
+                    wd["user_id"],
+                    "✅ Withdrawal approved!"
+                )
+
+            except Exception:
+                pass
+
+        await query.edit_message_text(
+            f"✅ Marked as {new_status}.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_withdrawals"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # =====================================================
+    # USERS
+    # =====================================================
+
+    if data == "admin_users":
+
+        total = users_collection.count_documents({})
+
+        await query.edit_message_text(
+            (
+                "👥 <b>User Management</b>\n\n"
+                f"Total Users: <b>{total}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🚫 Ban User",
+                        callback_data="user_ban"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔓 Unban User",
+                        callback_data="user_unban"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "user_ban":
+
+        context.user_data[
+            "admin_action"
+        ] = "user_ban_action"
+
+        await query.edit_message_text(
+            "🚫 Send User ID to ban:",
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "user_unban":
+
+        context.user_data[
+            "admin_action"
+        ] = "user_unban_action"
+
+        await query.edit_message_text(
+            "🔓 Send User ID to unban:",
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # BALANCE MANAGEMENT
+    # =====================================================
+
+    if data == "admin_balance":
+
+        await query.edit_message_text(
+            "💰 <b>Balance Management</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "➕ Add POL",
+                        callback_data="balance_add"
+                    ),
+                    InlineKeyboardButton(
+                        "➖ Remove POL",
+                        callback_data="balance_remove"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔎 Check Balance",
+                        callback_data="balance_check"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # SETTINGS
+    # =====================================================
+
+    if data == "admin_settings":
+
+        cur_min_wd = get_setting(
+            "min_withdraw",
+            DEFAULT_MIN_WITHDRAW
+        )
+
+        cur_ref_comm = get_setting(
+            "ref_commission",
+            DEFAULT_REF_COMMISSION
+        )
+
+        await query.edit_message_text(
+            (
+                "⚙️ <b>Bot Settings</b>\n\n"
+                f"📌 Min Withdraw: <b>{cur_min_wd} POL</b>\n"
+                f"🎁 Refer Commission: <b>{cur_ref_comm} POL</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✏️ Change Min Withdraw",
+                        callback_data="set_min_withdraw"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✏️ Change Refer Commission",
+                        callback_data="set_ref_commission"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "set_min_withdraw":
+
+        context.user_data[
+            "admin_action"
+        ] = "set_min_withdraw_action"
+
+        await query.edit_message_text(
+            "📌 Send new Minimum Withdraw amount:",
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "set_ref_commission":
+
+        context.user_data[
+            "admin_action"
+        ] = "set_ref_commission_action"
+
+        await query.edit_message_text(
+            "🎁 Send new Referral Commission amount:",
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # BROADCAST
+    # =====================================================
+
+    if data == "admin_broadcast":
+
+        context.user_data[
+            "admin_action"
+        ] = "broadcast"
+
+        await query.edit_message_text(
+            (
+                "📢 <b>Broadcast</b>\n\n"
+                "Send message to broadcast "
+                "(or /cancel):"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================================================
+# BALANCE ACTION CALLBACK
+# =========================================================
+
+async def balance_action_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized.",
+            show_alert=True
+        )
+
+        return
+
+    data = query.data
+
+    await query.answer()
+
+    if data == "balance_add":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_add"
+
+        await query.edit_message_text(
+            (
+                "➕ <b>Add POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "balance_remove":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_remove"
+
+        await query.edit_message_text(
+            (
+                "➖ <b>Remove POL</b>\n\n"
+                "Send:\n"
+                "<code>USER_ID AMOUNT</code>"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "balance_check":
+
+        context.user_data[
+            "admin_action"
+        ] = "balance_check"
+
+        await query.edit_message_text(
+            (
+                "🔎 <b>Check Balance</b>\n\n"
+                "Send User ID."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================================================
+# ADMIN TEXT ACTIONS
+# =========================================================
+
+async def admin_text_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return False
+
+    action = context.user_data.get(
+        "admin_action"
+    )
+
+    text = update.message.text.strip()
+
+    # -----------------------------------------------------
+    # MIN WITHDRAW
+    # -----------------------------------------------------
+
+    if action == "set_min_withdraw_action":
+
+        try:
+
+            val = float(text)
+
+            if val <= 0:
+                raise ValueError()
+
+            update_setting(
+                "min_withdraw",
+                val
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                f"✅ Minimum withdraw updated to {val} POL"
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Send a valid positive number."
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # REFERRAL COMMISSION
+    # -----------------------------------------------------
+
+    if action == "set_ref_commission_action":
+
+        try:
+
+            val = float(text)
+
+            if val < 0:
+                raise ValueError()
+
+            update_setting(
+                "ref_commission",
+                val
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                f"✅ Referral commission updated to {val} POL"
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Send a valid number."
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # ADD TASK
+    # -----------------------------------------------------
+
+    if action and action.startswith(
+        "task_add_"
+    ):
+
+        if text == "/cancel":
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Cancelled."
+            )
+
+            return True
+
+        if action == "task_add_step1":
+
+            context.user_data[
+                "new_t_title"
+            ] = text
+
+            context.user_data[
+                "admin_action"
+            ] = "task_add_step2"
+
+            await update.message.reply_text(
+                "Send task description:"
+            )
+
+            return True
+
+        if action == "task_add_step2":
+
+            context.user_data[
+                "new_t_desc"
+            ] = text
+
+            context.user_data[
+                "admin_action"
+            ] = "task_add_step3"
+
+            await update.message.reply_text(
+                (
+                    "Send task link.\n\n"
+                    "Example:\n"
+                    "https://t.me/channel"
+                )
+            )
+
+            return True
+
+        if action == "task_add_step3":
+
+            context.user_data[
+                "new_t_link"
+            ] = text
+
+            context.user_data[
+                "admin_action"
+            ] = "task_add_step4"
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "Auto Verify (Channel Join)",
+                        callback_data="t_type_auto"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Manual Proof Task",
+                        callback_data="t_type_manual"
+                    )
+                ]
+            ])
+
+            await update.message.reply_text(
+                (
+                    "Select task type:\n\n"
+                    "Auto Verify or Manual Proof"
+                ),
+                reply_markup=keyboard
+            )
+
+            return True
+
+        if action == "task_add_step4":
+
+            try:
+
+                reward = float(text)
+
+                if reward <= 0:
+                    raise ValueError()
+
+                context.user_data[
+                    "new_t_reward"
+                ] = reward
+
+                context.user_data[
+                    "admin_action"
+                ] = "task_add_step5"
+
+                await update.message.reply_text(
+                    (
+                        "Send total slots limit.\n\n"
+                        "Example: 100\n"
+                        "Use 0 for unlimited."
+                    )
+                )
+
+            except Exception:
+
+                await update.message.reply_text(
+                    "❌ Send a valid positive reward."
+                )
+
+            return True
+
+        if action == "task_add_step5":
+
+            try:
+
+                slots = int(text)
+
+                if slots < 0:
+                    raise ValueError()
+
+                task_id = str(
+                    uuid.uuid4()
+                )[:8]
+
+                tasks_collection.insert_one({
+                    "task_id": task_id,
+                    "title": context.user_data[
+                        "new_t_title"
+                    ],
+                    "description": context.user_data[
+                        "new_t_desc"
+                    ],
+                    "link": context.user_data[
+                        "new_t_link"
+                    ],
+                    "task_type": context.user_data.get(
+                        "new_t_type",
+                        "auto"
+                    ),
+                    "reward": context.user_data[
+                        "new_t_reward"
+                    ],
+                    "total_slots": slots,
+                    "completed_slots": 0,
+                    "active": True,
+                    "created_at": datetime.now(
+                        timezone.utc
+                    )
+                })
+
+                context.user_data.clear()
+
+                await update.message.reply_text(
+                    (
+                        "✅ Task added successfully!\n\n"
+                        f"🆔 Task ID: {task_id}\n"
+                        f"🎯 Slots: {slots}"
+                    )
+                )
+
+            except Exception as e:
+
+                await update.message.reply_text(
+                    f"❌ Error: {e}"
+                )
+
+            return True
+
+    # -----------------------------------------------------
+    # BAN
+    # -----------------------------------------------------
+
+    if action == "user_ban_action":
+
+        try:
+
+            uid = int(text)
+
+            result = users_collection.update_one(
+                {
+                    "user_id": uid
+                },
+                {
+                    "$set": {
+                        "is_banned": True
+                    }
+                }
+            )
+
+            if result.matched_count != 1:
+                raise ValueError()
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                f"✅ User {uid} banned."
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Invalid User ID or user not found."
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # UNBAN
+    # -----------------------------------------------------
+
+    if action == "user_unban_action":
+
+        try:
+
+            uid = int(text)
+
+            result = users_collection.update_one(
+                {
+                    "user_id": uid
+                },
+                {
+                    "$set": {
+                        "is_banned": False
+                    }
+                }
+            )
+
+            if result.matched_count != 1:
+                raise ValueError()
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                f"✅ User {uid} unbanned."
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Invalid User ID or user not found."
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # BROADCAST
+    # -----------------------------------------------------
+
+    if action == "broadcast":
+
+        if text == "/cancel":
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Cancelled."
+            )
+
+            return True
+
+        users = users_collection.find(
+            {},
+            {
+                "user_id": 1
+            }
+        )
+
+        sent = 0
+
+        for user in users:
+
+            try:
+
+                await context.bot.send_message(
+                    chat_id=user["user_id"],
+                    text=text
+                )
+
+                sent += 1
+
+            except Exception:
+
+                pass
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"📢 Broadcast sent to {sent} users."
+        )
+
+        return True
+
+    # -----------------------------------------------------
+    # BALANCE ADD
+    # -----------------------------------------------------
+
+    if action == "balance_add":
+
+        try:
+
+            parts = text.split()
+
+            if len(parts) != 2:
+                raise ValueError()
+
+            target_id = int(
+                parts[0]
+            )
+
+            amount = float(
+                parts[1]
+            )
+
+            if amount <= 0:
+                raise ValueError()
+
+            result = users_collection.update_one(
+                {
+                    "user_id": target_id
+                },
+                {
+                    "$inc": {
+                        "balance": amount
+                    }
+                }
+            )
+
+            if result.matched_count != 1:
+                raise ValueError()
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                (
+                    f"✅ Added {amount} POL "
+                    f"to user {target_id}"
+                )
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Format: USER_ID AMOUNT"
+            )
+
+        return True
+
+    # -----------------------------------------------------
+    # BALANCE REMOVE
+    # -----------------------------------------------------
+
+    if action == "balance_remove":
+
+        try:
+
+            parts = text.split()
+
+            if len(parts) != 2:
+                raise ValueError()
+
+            target_id = int(
+                parts[0]
+            )
+
+            amount = float(
+                parts[1]
+            )
+
+            if amount <= 0:
+                raise ValueError()
+
+            result = users_collection.update_one(
+                {
+                    "user_id": target_id,
+                    "balance": {
+                        "$gte": amount
+                    }
+                },
+                {
+  # =========================================================
+# PHOTO PROOF HANDLER
+# =========================================================
+
+async def photo_proof_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    task_id = context.user_data.get(
+        "submitting_task_id"
+    )
+
+    if not task_id:
+        return
+
+    task = tasks_collection.find_one(
+        {
+            "task_id": task_id,
+            "active": True
+        }
+    )
+
+    if not task:
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ This task is no longer available."
+        )
+
+        return
+
+    if users_collection.find_one(
+        {
+            "user_id": user_id,
+            "completed_tasks": task_id
+        }
+    ):
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ You already completed this task."
+        )
+
+        return
+
+    total_slots = int(
+        task.get(
+            "total_slots",
+            0
+        ) or 0
+    )
+
+    completed_slots = int(
+        task.get(
+            "completed_slots",
+            0
+        ) or 0
+    )
+
+    if (
+        total_slots > 0
+        and completed_slots >= total_slots
+    ):
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        tasks_collection.update_one(
+            {
+                "task_id": task_id
+            },
+            {
+                "$set": {
+                    "active": False
+                }
+            }
+        )
+
+        await update.message.reply_text(
+            "❌ Task slots are finished."
+        )
+
+        return
+
+    if submissions_collection.find_one(
+        {
+            "user_id": user_id,
+            "task_id": task_id,
+            "status": "pending"
+        }
+    ):
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "❌ You already have a pending submission for this task."
+        )
+
+        return
+
+    proof = (
+        update.message.caption.strip()
+        if update.message.caption
+        else "Screenshot proof"
+    )
+
+    submissions_collection.insert_one({
+        "user_id": user_id,
+        "task_id": task_id,
+        "proof": proof,
+        "photo_file_id": (
+            update.message.photo[-1].file_id
+        ),
+        "status": "pending",
+        "created_at": datetime.now(
+            timezone.utc
+        )
+    })
+
+    context.user_data.pop(
+        "submitting_task_id",
+        None
+    )
+
+    await update.message.reply_text(
+        "✅ Screenshot proof submitted successfully! "
+        "Admin will review it soon."
+    )
+
+
+# =========================================================
+# TEXT HANDLER
+# =========================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    task_id_to_submit = context.user_data.get(
+        "submitting_task_id"
+    )
+
+    if task_id_to_submit:
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": task_id_to_submit,
+                "active": True
+            }
+        )
+
+        if not task:
+
+            context.user_data.pop(
+                "submitting_task_id",
+                None
+            )
+
+            await update.message.reply_text(
+                "❌ This task is no longer available."
+            )
+
+            return
+
+        if users_collection.find_one(
+            {
+                "user_id": user_id,
+                "completed_tasks": task_id_to_submit
+            }
+        ):
+
+            context.user_data.pop(
+                "submitting_task_id",
+                None
+            )
+
+            await update.message.reply_text(
+                "❌ You already completed this task."
+            )
+
+            return
+
+        total_slots = int(
+            task.get(
+                "total_slots",
+                0
+            ) or 0
+        )
+
+        completed_slots = int(
+            task.get(
+                "completed_slots",
+                0
+            ) or 0
+        )
+
+        if (
+            total_slots > 0
+            and completed_slots >= total_slots
+        ):
+
+            context.user_data.pop(
+                "submitting_task_id",
+                None
+            )
+
+            tasks_collection.update_one(
+                {
+                    "task_id": task_id_to_submit
+                },
+                {
+                    "$set": {
+                        "active": False
+                    }
+                }
+            )
+
+            await update.message.reply_text(
+                "❌ Task slots are finished."
+            )
+
+            return
+
+        if submissions_collection.find_one(
+            {
+                "user_id": user_id,
+                "task_id": task_id_to_submit,
+                "status": "pending"
+            }
+        ):
+
+            context.user_data.pop(
+                "submitting_task_id",
+                None
+            )
+
+            await update.message.reply_text(
+                "❌ You already have a pending submission for this task."
+            )
+
+            return
+
+        proof_text = update.message.text.strip()
+
+        submissions_collection.insert_one({
+            "user_id": user_id,
+            "task_id": task_id_to_submit,
+            "proof": proof_text,
+            "status": "pending",
+            "created_at": datetime.now(
+                timezone.utc
+            )
+        })
+
+        context.user_data.pop(
+            "submitting_task_id",
+            None
+        )
+
+        await update.message.reply_text(
+            "✅ Proof submitted successfully! "
+            "Admin will review it soon."
+        )
+
+        return
+
+    if (
+        context.user_data.get(
+            "admin_action"
+        )
+        and user_id == ADMIN_ID
+    ):
+
+        handled = await admin_text_action(
+            update,
+            context
+        )
+
+        if handled:
+            return
+
+    if context.user_data.get(
+        "withdraw_step"
+    ):
+
+        await process_withdraw(
+            update,
+            context
+        )
+
+        return
+
+    await menu_handler(
+        update,
+        context
+    )
+
+
+# =========================================================
+# CALLBACK ROUTER
+# =========================================================
+
+async def callback_router(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    try:
+
+        await query.answer()
+
+    except Exception:
+
+        pass
+
+    data = query.data
+
+    user_id = query.from_user.id
+
+    if data == "check_join":
+
+        await check_join(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # TASK TYPE
+    # =====================================================
+
+    if (
+        data == "t_type_auto"
+        or data == "t_type_manual"
+    ):
+
+        if (
+            user_id == ADMIN_ID
+            and context.user_data.get(
+                "admin_action"
+            ) == "task_add_step4"
+        ):
+
+            context.user_data[
+                "new_t_type"
+            ] = (
+                "auto"
+                if data == "t_type_auto"
+                else "manual"
+            )
+
+            context.user_data[
+                "admin_action"
+            ] = "task_add_step4"
+
+            await query.edit_message_text(
+                "Send reward amount (e.g. 0.5):"
+            )
+
+            return
+
+    # =====================================================
+    # TASK DETAILS
+    # =====================================================
+
+    if (
+        data.startswith("task_")
+        and not data.startswith("task_add")
+    ):
+
+        await task_details(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # COMPLETE TASK
+    # =====================================================
+
+    if data.startswith(
+        "complete_"
+    ):
+
+        await complete_task(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # SUBMIT PROOF
+    # =====================================================
+
+    if data.startswith(
+        "submitproof_"
+    ):
+
+        await request_proof_input(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # BALANCE
+    # =====================================================
+
+    if data.startswith(
+        "balance_"
+    ):
+
+        await balance_action_callback(
+            update,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # ADMIN
+    # =====================================================
+
+    if user_id == ADMIN_ID:
+
+        admin_prefixes = [
+            "admin_",
+            "task_add",
+            "task_list",
+            "withdraw_",
+            "wd_",
+            "sub_",
+            "user_",
+            "balance_",
+            "set_"
+        ]
+
+        if any(
+            data.startswith(prefix)
+            for prefix in admin_prefixes
+        ):
+
+            await admin_callback(
+                update,
+                context
+            )
+
+            return
+
+    try:
+
+        await query.answer(
+            "❌ Invalid action or unauthorized.",
+            show_alert=True
+        )
+
+    except Exception:
+
+        pass
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
+
+    print(
+        "Telegram error:",
+        repr(context.error)
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    print(
+        "Connecting to MongoDB..."
+    )
+
+    mongo_client.admin.command(
+        "ping"
+    )
+
+    print(
+        "MongoDB connected successfully."
+    )
+
+    setup_database()
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_router
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            photo_proof_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
+    print(
+        "TaskMint Bot is running with all updated features..."
+    )
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
