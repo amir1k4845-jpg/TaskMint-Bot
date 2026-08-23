@@ -3176,3 +3176,776 @@ async def approve_submission(
             )
 
             return
+        # Reserve one slot before giving reward
+        reserved, _ = await reserve_task_slot(
+            task_id
+        )
+
+        if not reserved:
+
+            submissions_collection.update_one(
+                {
+                    "_id": oid
+                },
+                {
+                    "$set": {
+                        "status": "rejected",
+                        "reason": "Slots finished"
+                    }
+                }
+            )
+
+            await query.answer(
+                "❌ No task slots remaining.",
+                show_alert=True
+            )
+
+            return
+
+        reward = float(
+            task.get(
+                "reward",
+                0
+            )
+        )
+
+        # Reward only if user has not completed task
+        user_result = users_collection.update_one(
+            {
+                "user_id": user_id,
+                "completed_tasks": {
+                    "$ne": task_id
+                }
+            },
+            {
+                "$inc": {
+                    "balance": reward
+                },
+                "$addToSet": {
+                    "completed_tasks": task_id
+                }
+            }
+        )
+
+        if user_result.modified_count != 1:
+
+            rollback_task_slot(
+                task_id
+            )
+
+            submissions_collection.update_one(
+                {
+                    "_id": oid
+                },
+                {
+                    "$set": {
+                        "status": "rejected",
+                        "reason": "Already completed"
+                    }
+                }
+            )
+
+            await query.answer(
+                "⚠️ User already completed this task.",
+                show_alert=True
+            )
+
+            return
+
+        submissions_collection.update_one(
+            {
+                "_id": oid
+            },
+            {
+                "$set": {
+                    "status": "approved",
+                    "updated_at": now_utc()
+                }
+            }
+        )
+
+        await check_and_pay_referral(
+            user_id,
+            context
+        )
+
+        try:
+
+            await context.bot.send_message(
+                user_id,
+                (
+                    f"✅ Your <b>{escape(str(task.get('category', 'manual')))}</b> "
+                    "task was approved!\n\n"
+                    f"💰 Reward: <b>+{reward:.6f} "
+                    f"{TOKEN_NAME}</b>"
+                ),
+                parse_mode="HTML"
+            )
+
+        except Exception:
+            pass
+
+        await query.answer(
+            "✅ Approved and reward added!",
+            show_alert=True
+        )
+
+        await query.edit_message_text(
+            "✅ <b>Submission approved.</b>",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Submissions",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+    except Exception as error:
+
+        print(
+            "Approve submission error:",
+            error
+        )
+
+        try:
+
+            await query.answer(
+                "❌ Error approving submission.",
+                show_alert=True
+            )
+
+        except Exception:
+            pass
+
+
+# =========================
+# REJECT SUBMISSION
+# =========================
+
+async def reject_submission(
+    query,
+    context,
+    sid
+):
+
+    try:
+
+        oid = ObjectId(
+            sid
+        )
+
+        result = submissions_collection.update_one(
+            {
+                "_id": oid,
+                "status": "pending"
+            },
+            {
+                "$set": {
+                    "status": "rejected",
+                    "updated_at": now_utc()
+                }
+            }
+        )
+
+        if result.modified_count != 1:
+
+            await query.answer(
+                "⚠️ Already processed.",
+                show_alert=True
+            )
+
+            return
+
+        submission = submissions_collection.find_one(
+            {
+                "_id": oid
+            }
+        )
+
+        if submission:
+
+            try:
+
+                await context.bot.send_message(
+                    submission["user_id"],
+                    "❌ Your task proof was rejected by admin."
+                )
+
+            except Exception:
+                pass
+
+        await query.answer(
+            "❌ Submission rejected.",
+            show_alert=True
+        )
+
+        await query.edit_message_text(
+            "❌ <b>Submission rejected.</b>",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Submissions",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+    except Exception:
+
+        await query.answer(
+            "❌ Error.",
+            show_alert=True
+        )
+
+
+# =========================
+# ADMIN TEXT ACTIONS
+# =========================
+
+async def admin_text_action(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return False
+
+    action = context.user_data.get(
+        "admin_action"
+    )
+
+    text = update.message.text.strip()
+
+
+    # =====================
+    # BROADCAST
+    # =====================
+
+    if action == "admin_broadcast_msg":
+
+        context.user_data.clear()
+
+        count = 0
+
+        await update.message.reply_text(
+            "📢 Broadcasting started..."
+        )
+
+        for user in users_collection.find(
+            {
+                "is_banned": {
+                    "$ne": True
+                }
+            },
+            {
+                "user_id": 1
+            }
+        ):
+
+            try:
+
+                await context.bot.send_message(
+                    user["user_id"],
+                    text,
+                    parse_mode="HTML"
+                )
+
+                count += 1
+
+            except Exception:
+                pass
+
+        await update.message.reply_text(
+            (
+                f"✅ Broadcast complete. "
+                f"Sent to {count} users."
+            )
+        )
+
+        return True
+
+
+    # =====================
+    # TASK TITLE
+    # =====================
+
+    if action == "task_add_title":
+
+        context.user_data[
+            "new_task"
+        ]["title"] = text
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_desc"
+
+        await update.message.reply_text(
+            "📝 Send task description:"
+        )
+
+        return True
+
+
+    # =====================
+    # TASK DESCRIPTION
+    # =====================
+
+    if action == "task_add_desc":
+
+        context.user_data[
+            "new_task"
+        ]["description"] = text
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_link"
+
+        await update.message.reply_text(
+            "🔗 Send task link:"
+        )
+
+        return True
+
+
+    # =====================
+    # TASK LINK
+    # =====================
+
+    if action == "task_add_link":
+
+        if not text.startswith(
+            (
+                "http://",
+                "https://"
+            )
+        ):
+
+            await update.message.reply_text(
+                (
+                    "❌ Send a valid URL "
+                    "starting with http:// or https://"
+                )
+            )
+
+            return True
+
+        context.user_data[
+            "new_task"
+        ]["link"] = text
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_reward"
+
+        await update.message.reply_text(
+            (
+                f"💰 Send reward amount "
+                f"in {TOKEN_NAME}:"
+            )
+        )
+
+        return True
+
+
+    # =====================
+    # TASK REWARD
+    # =====================
+
+    if action == "task_add_reward":
+
+        try:
+
+            reward = float(
+                text
+            )
+
+            if reward <= 0:
+                raise ValueError
+
+        except ValueError:
+
+            await update.message.reply_text(
+                (
+                    "❌ Invalid reward. "
+                    "Send a positive number:"
+                )
+            )
+
+            return True
+
+        context.user_data[
+            "new_task"
+        ]["reward"] = reward
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_slots"
+
+        await update.message.reply_text(
+            (
+                "👥 Send total slots.\n"
+                "Use <code>0</code> for unlimited:"
+            ),
+            parse_mode="HTML"
+        )
+
+        return True
+
+
+    # =====================
+    # TASK SLOTS
+    # =====================
+
+    if action == "task_add_slots":
+
+        try:
+
+            slots = int(
+                text
+            )
+
+            if slots < 0:
+                raise ValueError
+
+            task = context.user_data.get(
+                "new_task",
+                {}
+            )
+
+            if not task.get(
+                "category"
+            ):
+
+                raise ValueError
+
+            task_id = uuid.uuid4().hex[:10]
+
+            tasks_collection.insert_one(
+                {
+                    "task_id": task_id,
+
+                    "title": task["title"],
+
+                    "description": task["description"],
+
+                    "link": task["link"],
+
+                    "reward": float(
+                        task["reward"]
+                    ),
+
+                    "total_slots": slots,
+
+                    "completed_slots": 0,
+
+                    "category": task["category"],
+
+                    "task_mode": task["task_mode"],
+
+                    "active": True,
+
+                    "created_at": now_utc()
+                }
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "✅ Task added successfully!"
+            )
+
+        except Exception as error:
+
+            print(
+                "Task create error:",
+                error
+            )
+
+            await update.message.reply_text(
+                (
+                    "❌ Could not create task. "
+                    "Send slots again:"
+                )
+            )
+
+        return True
+
+
+    # =====================
+    # SETTINGS
+    # =====================
+
+    if action in {
+        "update_min_withdraw",
+        "update_ref_comm"
+    }:
+
+        try:
+
+            value = float(
+                text
+            )
+
+            if value <= 0:
+                raise ValueError
+
+            if action == "update_min_withdraw":
+
+                key = "min_withdraw"
+
+            else:
+
+                key = "ref_commission"
+
+            update_setting(
+                key,
+                value
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                (
+                    f"✅ Setting updated to "
+                    f"{value} {TOKEN_NAME}."
+                )
+            )
+
+        except ValueError:
+
+            await update.message.reply_text(
+                (
+                    "❌ Send a valid "
+                    "positive number:"
+                )
+            )
+
+        return True
+
+
+    # =====================
+    # BAN / UNBAN
+    # =====================
+
+    if action in {
+        "user_ban_action",
+        "user_unban_action"
+    }:
+
+        try:
+
+            uid = int(
+                text
+            )
+
+            banned = (
+                action == "user_ban_action"
+            )
+
+            result = users_collection.update_one(
+                {
+                    "user_id": uid
+                },
+                {
+                    "$set": {
+                        "is_banned": banned
+                    }
+                }
+            )
+
+            context.user_data.clear()
+
+            if result.matched_count:
+
+                if banned:
+
+                    message = (
+                        f"✅ User {uid} banned."
+                    )
+
+                else:
+
+                    message = (
+                        f"✅ User {uid} unbanned."
+                    )
+
+            else:
+
+                message = (
+                    "❌ User not found."
+                )
+
+            await update.message.reply_text(
+                message
+            )
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Invalid User ID."
+            )
+
+        return True
+
+
+    # =====================
+    # BALANCE ADD / REMOVE
+    # =====================
+
+    if action in {
+        "balance_add",
+        "balance_remove"
+    }:
+
+        try:
+
+            parts = text.split()
+
+            uid = int(
+                parts[0]
+            )
+
+            amount = float(
+                parts[1]
+            )
+
+            if amount <= 0:
+                raise ValueError
+
+            if action == "balance_add":
+
+                result = users_collection.update_one(
+                    {
+                        "user_id": uid
+                    },
+                    {
+                        "$inc": {
+                            "balance": amount
+                        }
+                    }
+                )
+
+                if result.matched_count:
+
+                    message = (
+                        f"✅ Added {amount} "
+                        f"{TOKEN_NAME}."
+                    )
+
+                else:
+
+                    message = (
+                        "❌ User not found."
+                    )
+
+            else:
+
+                result = users_collection.update_one(
+                    {
+                        "user_id": uid,
+                        "balance": {
+                            "$gte": amount
+                        }
+                    },
+                    {
+                        "$inc": {
+                            "balance": -amount
+                        }
+                    }
+                )
+
+                if result.modified_count:
+
+                    message = (
+                        f"✅ Removed {amount} "
+                        f"{TOKEN_NAME}."
+                    )
+
+                else:
+
+                    message = (
+                        "❌ User not found or "
+                        "insufficient balance."
+                    )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                message
+            )
+
+        except (
+            ValueError,
+            IndexError
+        ):
+
+            await update.message.reply_text(
+                (
+                    "❌ Format:\n"
+                    "USER_ID AMOUNT"
+                )
+            )
+
+        return True
+
+
+    # =====================
+    # BALANCE CHECK
+    # =====================
+
+    if action == "balance_check":
+
+        try:
+
+            uid = int(
+                text
+            )
+
+            user = get_user(
+                uid
+            )
+
+            balance = get_balance(
+                uid
+            )
+
+            context.user_data.clear()
+
+            if user:
+
+                await update.message.reply_text(
+                    (
+                        f"🔎 User "
+                        f"<code>{uid}</code>\n\n"
+                        f"💰 Balance: "
+                        f"<b>{balance:.6f} "
+                        f"{TOKEN_NAME}</b>"
+                    ),
+                    parse_mode="HTML"
+                )
+
+            else:
+
+                await update.message.reply_text(
+                    "❌ User not found."
+                )
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Invalid User ID."
+            )
+
+        return True
+
+
+    return False
