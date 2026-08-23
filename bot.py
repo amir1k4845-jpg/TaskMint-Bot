@@ -69,3 +69,147 @@ def start_health_server():
     print(f"Health server started on port {port}")
     server.serve_forever()
     
+mongo_client = MongoClient(
+    MONGO_URI,
+    serverSelectionTimeoutMS=10000
+)
+
+db = mongo_client["taskmint"]
+
+users_collection = db["users"]
+tasks_collection = db["tasks"]
+withdrawals_collection = db["withdrawals"]
+submissions_collection = db["task_submissions"]
+settings_collection = db["settings"]
+
+
+def setup_database():
+    users_collection.create_index("user_id", unique=True)
+    tasks_collection.create_index("task_id", unique=True)
+    withdrawals_collection.create_index("user_id")
+    withdrawals_collection.create_index("status")
+    submissions_collection.create_index("user_id")
+    submissions_collection.create_index("task_id")
+    settings_collection.create_index("key", unique=True)
+
+    print("MongoDB database ready.")
+
+
+def get_setting(key, default_value):
+    setting = settings_collection.find_one({"key": key})
+    if setting:
+        return setting.get("value", default_value)
+    return default_value
+
+
+def update_setting(key, value):
+    settings_collection.update_one(
+        {"key": key},
+        {"$set": {"value": value}},
+        upsert=True
+    )
+
+
+def create_or_update_user(user, referrer_id=None):
+    now = datetime.now(timezone.utc)
+    existing_user = users_collection.find_one({"user_id": user.id})
+
+    if not existing_user:
+        ref_by = None
+        if referrer_id and referrer_id != user.id:
+            ref_user = users_collection.find_one({"user_id": referrer_id})
+            if ref_user:
+                ref_by = referrer_id
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"referrals": 1}}
+                )
+
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                },
+                "$setOnInsert": {
+                    "user_id": user.id,
+                    "balance": 0.0,
+                    "referrals": 0,
+                    "referred_by": ref_by,
+                    "ref_bonus_paid": False,
+                    "completed_tasks": [],
+                    "is_banned": False,
+                    "created_at": now
+                }
+            },
+            upsert=True
+        )
+    else:
+        users_collection.update_one(
+            {"user_id": user.id},
+            {
+                "$set": {
+                    "username": user.username or "",
+                    "first_name": user.first_name or "",
+                    "last_name": user.last_name or "",
+                    "updated_at": now
+                }
+            }
+        )
+
+
+def get_user(user_id):
+    return users_collection.find_one({"user_id": user_id})
+
+
+def get_balance(user_id):
+    user = get_user(user_id)
+    if not user:
+        return 0.0
+    return float(user.get("balance", 0.0))
+
+
+async def check_and_pay_referral(user_id, context):
+    user = get_user(user_id)
+    if not user or user.get("ref_bonus_paid", False):
+        return
+
+    referred_by = user.get("referred_by")
+    completed_tasks = user.get("completed_tasks", [])
+
+    if referred_by and len(completed_tasks) >= 4:
+        ref_commission = float(get_setting("ref_commission", DEFAULT_REF_COMMISSION))
+
+        result = users_collection.update_one(
+            {
+                "user_id": user_id,
+                "ref_bonus_paid": False,
+                "referred_by": {"$ne": None}
+            },
+            {"$set": {"ref_bonus_paid": True}}
+        )
+
+        if result.modified_count != 1:
+            return
+
+        users_collection.update_one(
+            {"user_id": referred_by},
+            {"$inc": {"balance": ref_commission}}
+        )
+
+        try:
+            await context.bot.send_message(
+                referred_by,
+                (
+                    "🎉 <b>Referral Bonus Unlocked!</b>\n\n"
+                    "Your referred user has completed 4 tasks.\n"
+                    f"💰 You received <b>+{ref_commission} {TOKEN_NAME}</b> commission!"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+            
