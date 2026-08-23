@@ -1947,3 +1947,579 @@ async def admin_callback(
         )
 
         return
+    # =====================================================
+    # SUBMISSION DETAILS
+    # =====================================================
+
+    if data.startswith(
+        "sub_manage_"
+    ):
+
+        sid = data.replace(
+            "sub_manage_",
+            "",
+            1
+        )
+
+        try:
+
+            sub = submissions_collection.find_one(
+                {
+                    "_id": ObjectId(sid)
+                }
+            )
+
+        except Exception:
+
+            sub = None
+
+        if not sub:
+
+            await query.answer(
+                "❌ Submission not found.",
+                show_alert=True
+            )
+
+            return
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": sub["task_id"]
+            }
+        )
+
+        task_name = (
+            task.get(
+                "title",
+                "Unknown"
+            )
+            if task
+            else "Unknown"
+        )
+
+        proof = escape(
+            str(
+                sub.get(
+                    "proof",
+                    ""
+                )
+            )
+        )
+
+        await query.edit_message_text(
+            (
+                "📥 <b>Submission Details</b>\n\n"
+                f"👤 User ID: <code>{sub['user_id']}</code>\n"
+                f"🎯 Task: <b>{escape(str(task_name))}</b>\n"
+                f"📄 Proof: <code>{proof}</code>\n"
+                f"📌 Status: <b>{escape(str(sub.get('status', 'pending')))}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"sub_approve_{sid}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Reject",
+                        callback_data=f"sub_reject_{sid}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_submissions"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # APPROVE / REJECT SUBMISSION
+    # =====================================================
+
+    if (
+        data.startswith("sub_approve_")
+        or data.startswith("sub_reject_")
+    ):
+
+        parts = data.split("_")
+
+        action_type = parts[1]
+        sid = parts[2]
+
+        new_status = (
+            "approved"
+            if action_type == "approve"
+            else "rejected"
+        )
+
+        try:
+
+            sub = submissions_collection.find_one(
+                {
+                    "_id": ObjectId(sid),
+                    "status": "pending"
+                }
+            )
+
+        except Exception:
+
+            sub = None
+
+        if not sub:
+
+            await query.answer(
+                "Already processed or not found.",
+                show_alert=True
+            )
+
+            return
+
+        # Mark submission first.
+        submissions_collection.update_one(
+            {
+                "_id": ObjectId(sid),
+                "status": "pending"
+            },
+            {
+                "$set": {
+                    "status": new_status,
+                    "updated_at": datetime.now(
+                        timezone.utc
+                    )
+                }
+            }
+        )
+
+        if new_status == "rejected":
+
+            try:
+
+                await context.bot.send_message(
+                    sub["user_id"],
+                    "❌ Your task proof has been rejected."
+                )
+
+            except Exception:
+                pass
+
+            await query.edit_message_text(
+                "❌ Submission rejected.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        # -------------------------------------------------
+        # APPROVAL
+        # -------------------------------------------------
+
+        task = tasks_collection.find_one(
+            {
+                "task_id": sub["task_id"]
+            }
+        )
+
+        if not task:
+
+            await query.edit_message_text(
+                "⚠️ Task no longer exists. No reward paid.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        reward = float(
+            task.get(
+                "reward",
+                0
+            )
+        )
+
+        total_slots = int(
+            task.get(
+                "total_slots",
+                0
+            ) or 0
+        )
+
+        already_done = users_collection.find_one(
+            {
+                "user_id": sub["user_id"],
+                "completed_tasks": sub["task_id"]
+            }
+        )
+
+        if already_done:
+
+            await query.edit_message_text(
+                "⚠️ User already completed this task. No duplicate reward.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        # -------------------------------------------------
+        # ATOMIC SLOT RESERVATION
+        # -------------------------------------------------
+
+        slot_filter = {
+            "task_id": sub["task_id"],
+            "active": True
+        }
+
+        if total_slots > 0:
+
+            slot_filter["$expr"] = {
+                "$lt": [
+                    {
+                        "$ifNull": [
+                            "$completed_slots",
+                            0
+                        ]
+                    },
+                    "$total_slots"
+                ]
+            }
+
+        slot_result = tasks_collection.update_one(
+            slot_filter,
+            {
+                "$inc": {
+                    "completed_slots": 1
+                }
+            }
+        )
+
+        if slot_result.modified_count != 1:
+
+            tasks_collection.update_one(
+                {
+                    "task_id": sub["task_id"]
+                },
+                {
+                    "$set": {
+                        "active": False
+                    }
+                }
+            )
+
+            submissions_collection.update_one(
+                {
+                    "_id": ObjectId(sid)
+                },
+                {
+                    "$set": {
+                        "reward_paid": False
+                    }
+                }
+            )
+
+            try:
+
+                await context.bot.send_message(
+                    sub["user_id"],
+                    (
+                        "❌ Your proof was approved, "
+                        "but the task slots were already full. "
+                        "No reward was added."
+                    )
+                )
+
+            except Exception:
+                pass
+
+            await query.edit_message_text(
+                (
+                    "⚠️ Submission approved, "
+                    "but slots were full. No reward paid."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        user_result = users_collection.update_one(
+            {
+                "user_id": sub["user_id"],
+                "completed_tasks": {
+                    "$ne": sub["task_id"]
+                }
+            },
+            {
+                "$inc": {
+                    "balance": reward
+                },
+                "$addToSet": {
+                    "completed_tasks": sub["task_id"]
+                }
+            }
+        )
+
+        if user_result.modified_count != 1:
+
+            tasks_collection.update_one(
+                {
+                    "task_id": sub["task_id"]
+                },
+                {
+                    "$inc": {
+                        "completed_slots": -1
+                    }
+                }
+            )
+
+            await query.edit_message_text(
+                "⚠️ User already completed this task. Reward not paid.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_submissions"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        submissions_collection.update_one(
+            {
+                "_id": ObjectId(sid)
+            },
+            {
+                "$set": {
+                    "reward_paid": True
+                }
+            }
+        )
+
+        if total_slots > 0:
+
+            tasks_collection.update_one(
+                {
+                    "task_id": sub["task_id"],
+                    "completed_slots": {
+                        "$gte": total_slots
+                    }
+                },
+                {
+                    "$set": {
+                        "active": False
+                    }
+                }
+            )
+
+        await check_and_pay_referral(
+            sub["user_id"],
+            context
+        )
+
+        try:
+
+            await context.bot.send_message(
+                sub["user_id"],
+                (
+                    "✅ Your manual task proof has been approved!\n\n"
+                    f"💰 Rewarded: +{reward} {TOKEN_NAME}"
+                )
+            )
+
+        except Exception:
+            pass
+
+        await query.edit_message_text(
+            (
+                "✅ Submission approved.\n\n"
+                f"Reward: +{reward} {TOKEN_NAME}"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_submissions"
+                    )
+                ]
+            ])
+        )
+
+        return
+
+    # =====================================================
+    # WITHDRAWALS
+    # =====================================================
+
+    if data == "admin_withdrawals":
+
+        pending = list(
+            withdrawals_collection.find(
+                {
+                    "status": "pending"
+                }
+            ).sort(
+                "created_at",
+                -1
+            ).limit(10)
+        )
+
+        if not pending:
+
+            await query.edit_message_text(
+                (
+                    "💳 <b>Withdrawals</b>\n\n"
+                    "No pending withdrawals."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+                ]),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for item in pending:
+
+            wid = str(
+                item["_id"]
+            )
+
+            amount = float(
+                item.get(
+                    "amount",
+                    0
+                )
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"💰 {amount:.4f} POL",
+                    callback_data=(
+                        f"withdraw_manage_{wid}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_home"
+            )
+        ])
+
+        await query.edit_message_text(
+            (
+                "💳 <b>Pending Withdrawals</b>\n\n"
+                "Select to manage:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # WITHDRAWAL DETAILS
+    # =====================================================
+
+    if data.startswith(
+        "withdraw_manage_"
+    ):
+
+        wid = data.replace(
+            "withdraw_manage_",
+            "",
+            1
+        )
+
+        try:
+
+            wd = withdrawals_collection.find_one(
+                {
+                    "_id": ObjectId(wid)
+                }
+            )
+
+        except Exception:
+
+            wd = None
+
+        if not wd:
+
+            await query.answer(
+                "❌ Not found.",
+                show_alert=True
+            )
+
+            return
+
+        await query.edit_message_text(
+            (
+                "💳 <b>Withdrawal Details</b>\n\n"
+                f"🆔 ID: <code>{escape(wid)}</code>\n"
+                f"👤 User: <code>{wd['user_id']}</code>\n"
+                f"💰 Amount: <b>{float(wd['amount']):.6f} POL</b>\n"
+                f"👛 Wallet: <code>{escape(str(wd['wallet']))}</code>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Approve",
+                        callback_data=f"wd_approve_{wid}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Reject",
+                        callback_data=f"wd_reject_{wid}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_withdrawals"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
