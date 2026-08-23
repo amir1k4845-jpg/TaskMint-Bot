@@ -456,3 +456,159 @@ async def complete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
     
+async def request_proof_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    task_id = query.data.replace("submitproof_", "", 1)
+
+    task = tasks_collection.find_one({"task_id": task_id, "active": True})
+    if not task:
+        await query.answer("❌ Task not available.", show_alert=True)
+        return
+
+    if users_collection.find_one({"user_id": user_id, "completed_tasks": task_id}):
+        await query.answer("❌ You already completed this task.", show_alert=True)
+        return
+
+    context.user_data["submitting_task_id"] = task_id
+    await query.answer()
+    await query.edit_message_text(
+        (
+            "📤 <b>Submit Manual Task Proof</b>\n\n"
+            f"Task: <b>{escape(str(task.get('title', 'Task')))}</b>\n\n"
+            "Please send your proof (text, link, or screenshot)."
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def refer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    referrals = user.get("referrals", 0) if user else 0
+    ref_commission = float(get_setting("ref_commission", DEFAULT_REF_COMMISSION))
+    bot_info = await context.bot.get_me()
+    referral_link = f"https://t.me/{bot_info.username}?start={user_id}"
+
+    await update.message.reply_text(
+        (
+            "👥 <b>Refer & Earn</b>\n\n"
+            f"👤 Referrals: <b>{referrals}</b>\n"
+            f"🎁 Commission: <b>{ref_commission} {TOKEN_NAME}</b>\n\n"
+            f"🔗 <b>Your Referral Link:</b>\n<code>{escape(referral_link)}</code>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def withdraw_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    min_withdraw = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
+    context.user_data.clear()
+
+    if balance < min_withdraw:
+        await update.message.reply_text(
+            (
+                "💳 <b>POL Withdrawal</b>\n\n"
+                f"💰 Balance: <b>{balance:.6f} POL</b>\n"
+                f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\n❌ Insufficient balance."
+            ),
+            parse_mode="HTML"
+        )
+        return
+
+    context.user_data["withdraw_step"] = "amount"
+    await update.message.reply_text(
+        (
+            "💳 <b>POL Withdrawal</b>\n\n"
+            f"💰 Available: <b>{balance:.6f} POL</b>\n"
+            f"📌 Minimum: <b>{min_withdraw:.6f} POL</b>\n\nEnter withdrawal amount:"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    step = context.user_data.get("withdraw_step")
+    min_withdraw = float(get_setting("min_withdraw", DEFAULT_MIN_WITHDRAW))
+
+    if step == "amount":
+        try:
+            amount = float(text)
+        except ValueError:
+            await update.message.reply_text("❌ Enter a valid amount.")
+            return
+
+        if amount <= 0:
+            await update.message.reply_text("❌ Amount must be greater than 0.")
+            return
+
+        balance = get_balance(user_id)
+        if amount < min_withdraw:
+            await update.message.reply_text(f"❌ Minimum is {min_withdraw} POL.")
+            return
+        if amount > balance:
+            await update.message.reply_text("❌ Insufficient balance.")
+            return
+
+        context.user_data["withdraw_amount"] = amount
+        context.user_data["withdraw_step"] = "wallet"
+        await update.message.reply_text("👛 <b>POL Wallet</b>\n\nSend your POL wallet address.", parse_mode="HTML")
+        return
+
+    if step == "wallet":
+        wallet = text
+        amount = context.user_data.get("withdraw_amount")
+        if not amount:
+            context.user_data.clear()
+            return
+
+        if len(wallet) < 20:
+            await update.message.reply_text("❌ Please send a valid wallet address.")
+            return
+
+        result = users_collection.update_one(
+            {"user_id": user_id, "balance": {"$gte": amount}},
+            {"$inc": {"balance": -amount}}
+        )
+
+        if result.modified_count != 1:
+            context.user_data.clear()
+            await update.message.reply_text("❌ Insufficient balance.")
+            return
+
+        now = datetime.now(timezone.utc)
+        withdrawal = {
+            "user_id": user_id,
+            "amount": amount,
+            "token": TOKEN_NAME,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now
+        }
+
+        try:
+            result = withdrawals_collection.insert_one(withdrawal)
+        except PyMongoError:
+            users_collection.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
+            context.user_data.clear()
+            await update.message.reply_text("❌ Withdrawal failed.")
+            return
+
+        wid = str(result.inserted_id)
+        context.user_data.clear()
+        await update.message.reply_text(
+            (
+                "✅ <b>Withdrawal Submitted</b>\n\n"
+                f"🆔 ID: <code>{wid}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{escape(wallet)}</code>\n"
+                "📌 Status: <b>Pending</b>"
+            ),
+            parse_mode="HTML"
+        )
+        
