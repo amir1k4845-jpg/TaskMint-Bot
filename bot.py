@@ -1274,3 +1274,647 @@ async def request_proof_input(
         ),
         parse_mode="HTML"
         )
+# =========================
+# REFERRAL MENU
+# =========================
+
+async def refer_menu(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    user = get_user(
+        user_id
+    ) or {}
+
+    bot_info = await context.bot.get_me()
+
+    link = (
+        f"https://t.me/"
+        f"{bot_info.username}"
+        f"?start={user_id}"
+    )
+
+    commission = float(
+        get_setting(
+            "ref_commission",
+            DEFAULT_REF_COMMISSION
+        )
+    )
+
+    await update.message.reply_text(
+        (
+            "👥 <b>Refer & Earn</b>\n\n"
+            f"👤 Referrals: <b>{user.get('referrals', 0)}</b>\n"
+            f"🎁 Commission: <b>{commission} {TOKEN_NAME}</b>\n\n"
+            f"🔗 <code>{escape(link)}</code>"
+        ),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# WITHDRAW
+# =========================
+
+async def withdraw_menu(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    balance = get_balance(
+        user_id
+    )
+
+    minimum = float(
+        get_setting(
+            "min_withdraw",
+            DEFAULT_MIN_WITHDRAW
+        )
+    )
+
+    context.user_data.clear()
+
+    if balance < minimum:
+
+        await update.message.reply_text(
+            (
+                "💳 <b>POL Withdrawal</b>\n\n"
+                f"💰 Balance: <b>{balance:.6f} POL</b>\n"
+                f"📌 Minimum: <b>{minimum:.6f} POL</b>\n\n"
+                "❌ Insufficient balance."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    context.user_data[
+        "withdraw_step"
+    ] = "amount"
+
+    await update.message.reply_text(
+        (
+            "💳 <b>POL Withdrawal</b>\n\n"
+            f"💰 Available: <b>{balance:.6f} POL</b>\n"
+            f"📌 Minimum: <b>{minimum:.6f} POL</b>\n\n"
+            "Enter withdrawal amount:"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def process_withdraw(
+    update,
+    context
+):
+
+    user_id = update.effective_user.id
+
+    text = update.message.text.strip()
+
+    step = context.user_data.get(
+        "withdraw_step"
+    )
+
+    minimum = float(
+        get_setting(
+            "min_withdraw",
+            DEFAULT_MIN_WITHDRAW
+        )
+    )
+
+    if step == "amount":
+
+        try:
+
+            amount = float(text)
+
+        except ValueError:
+
+            await update.message.reply_text(
+                "❌ Enter a valid amount."
+            )
+
+            return
+
+        balance = get_balance(
+            user_id
+        )
+
+        if amount <= 0:
+
+            await update.message.reply_text(
+                "❌ Amount must be greater than 0."
+            )
+
+            return
+
+        if amount < minimum:
+
+            await update.message.reply_text(
+                (
+                    f"❌ Minimum withdrawal is "
+                    f"{minimum} POL."
+                )
+            )
+
+            return
+
+        if amount > balance:
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return
+
+        context.user_data[
+            "withdraw_amount"
+        ] = amount
+
+        context.user_data[
+            "withdraw_step"
+        ] = "wallet"
+
+        await update.message.reply_text(
+            (
+                "👛 <b>POL Wallet</b>\n\n"
+                "Send your POL wallet address."
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if step == "wallet":
+
+        wallet = text
+
+        amount = context.user_data.get(
+            "withdraw_amount"
+        )
+
+        if not amount:
+
+            context.user_data.clear()
+
+            return
+
+        if len(wallet) < 20:
+
+            await update.message.reply_text(
+                "❌ Please send a valid wallet address."
+            )
+
+            return
+
+        # Atomic balance deduction
+        result = users_collection.update_one(
+            {
+                "user_id": user_id,
+                "balance": {
+                    "$gte": amount
+                }
+            },
+            {
+                "$inc": {
+                    "balance": -amount
+                }
+            }
+        )
+
+        if result.modified_count != 1:
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Insufficient balance."
+            )
+
+            return
+
+        withdrawal = {
+            "user_id": user_id,
+            "amount": amount,
+            "token": TOKEN_NAME,
+            "wallet": wallet,
+            "status": "pending",
+            "created_at": now_utc(),
+            "updated_at": now_utc()
+        }
+
+        try:
+
+            result = withdrawals_collection.insert_one(
+                withdrawal
+            )
+
+        except PyMongoError:
+
+            users_collection.update_one(
+                {
+                    "user_id": user_id
+                },
+                {
+                    "$inc": {
+                        "balance": amount
+                    }
+                }
+            )
+
+            context.user_data.clear()
+
+            await update.message.reply_text(
+                "❌ Withdrawal failed."
+            )
+
+            return
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            (
+                "✅ <b>Withdrawal Submitted</b>\n\n"
+                f"🆔 ID: <code>{result.inserted_id}</code>\n"
+                f"💰 Amount: <b>{amount:.6f} POL</b>\n"
+                f"👛 Wallet: <code>{escape(wallet)}</code>\n"
+                "📌 Status: <b>Pending</b>"
+            ),
+            parse_mode="HTML"
+        )
+
+
+# =========================
+# ADMIN TASK TYPES
+# =========================
+
+ADMIN_TASK_TYPES = {
+
+    "tasktype_telegram": (
+        "Telegram Channel Join",
+        "auto"
+    ),
+
+    "tasktype_x": (
+        "X",
+        "manual"
+    ),
+
+    "tasktype_instagram": (
+        "Instagram",
+        "manual"
+    ),
+
+    "tasktype_botjoin": (
+        "Bot Join",
+        "manual"
+    ),
+
+    "tasktype_custom": (
+        "Custom/Link",
+        "manual"
+    )
+}
+
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📊 Statistics",
+                    callback_data="admin_stats"
+                ),
+                InlineKeyboardButton(
+                    "🎯 Manage Tasks",
+                    callback_data="admin_tasks"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "💳 Withdrawals",
+                    callback_data="admin_withdrawals"
+                ),
+                InlineKeyboardButton(
+                    "📥 Submissions",
+                    callback_data="admin_submissions"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "👥 Users",
+                    callback_data="admin_users"
+                ),
+                InlineKeyboardButton(
+                    "💰 Balance Management",
+                    callback_data="admin_balance"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "⚙️ Bot Settings",
+                    callback_data="admin_settings"
+                ),
+                InlineKeyboardButton(
+                    "📢 Broadcast",
+                    callback_data="admin_broadcast"
+                )
+            ]
+        ]
+    )
+
+
+def task_type_keyboard():
+
+    return InlineKeyboardMarkup(
+        [
+
+            [
+                InlineKeyboardButton(
+                    "📢 Telegram Channel Join",
+                    callback_data="tasktype_telegram"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "𝕏 X",
+                    callback_data="tasktype_x"
+                ),
+                InlineKeyboardButton(
+                    "📸 Instagram",
+                    callback_data="tasktype_instagram"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🤖 Bot Join",
+                    callback_data="tasktype_botjoin"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔗 Custom/Link",
+                    callback_data="tasktype_custom"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="admin_tasks"
+                )
+            ]
+
+        ]
+    )
+
+
+def admin_tasks_keyboard():
+
+    return InlineKeyboardMarkup(
+        [
+
+            [
+                InlineKeyboardButton(
+                    "➕ Add Task",
+                    callback_data="task_add"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "📋 View/Manage Tasks",
+                    callback_data="task_list_admin"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="admin_home"
+                )
+            ]
+
+        ]
+    )
+
+
+# =========================
+# ADMIN PANEL
+# =========================
+
+async def admin_panel(
+    update,
+    context
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text(
+        (
+            "👑 <b>Admin Panel</b>\n\n"
+            "Select an option:"
+        ),
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+async def show_admin_tasks(
+    query
+):
+
+    active = tasks_collection.count_documents(
+        {
+            "active": True
+        }
+    )
+
+    inactive = tasks_collection.count_documents(
+        {
+            "active": False
+        }
+    )
+
+    await query.edit_message_text(
+        (
+            "🎯 <b>Manage Tasks</b>\n\n"
+            f"🟢 Active: <b>{active}</b>\n"
+            f"🔴 Inactive: <b>{inactive}</b>"
+        ),
+        reply_markup=admin_tasks_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# =========================
+# ADMIN CALLBACK
+# =========================
+
+async def admin_callback(
+    update,
+    context
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized.",
+            show_alert=True
+        )
+
+        return
+
+    data = query.data
+
+    await query.answer()
+
+
+    # =====================
+    # ADMIN HOME
+    # =====================
+
+    if data == "admin_home":
+
+        await query.edit_message_text(
+            (
+                "👑 <b>Admin Panel</b>\n\n"
+                "Select an option:"
+            ),
+            reply_markup=admin_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # STATISTICS
+    # =====================
+
+    if data == "admin_stats":
+
+        total_users = users_collection.count_documents({})
+
+        total_tasks = tasks_collection.count_documents({})
+
+        pending_withdrawals = withdrawals_collection.count_documents(
+            {
+                "status": "pending"
+            }
+        )
+
+        pending_submissions = submissions_collection.count_documents(
+            {
+                "status": "pending"
+            }
+        )
+
+        await query.edit_message_text(
+            (
+                "📊 <b>Statistics</b>\n\n"
+                f"👥 Users: <b>{total_users}</b>\n"
+                f"🎯 Tasks: <b>{total_tasks}</b>\n"
+                f"🕐 Pending Withdrawals: "
+                f"<b>{pending_withdrawals}</b>\n"
+                f"📥 Pending Submissions: "
+                f"<b>{pending_submissions}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+                ]
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # TASK MANAGEMENT
+    # =====================
+
+    if data == "admin_tasks":
+
+        await show_admin_tasks(
+            query
+        )
+
+        return
+
+
+    # =====================
+    # ADD TASK
+    # =====================
+
+    if data == "task_add":
+
+        context.user_data.clear()
+
+        context.user_data[
+            "admin_action"
+        ] = "task_type"
+
+        await query.edit_message_text(
+            (
+                "➕ <b>Add New Task</b>\n\n"
+                "Choose task type:"
+            ),
+            reply_markup=task_type_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+
+    # =====================
+    # TASK TYPE SELECT
+    # =====================
+
+    if data in ADMIN_TASK_TYPES:
+
+        category, mode = ADMIN_TASK_TYPES[
+            data
+        ]
+
+        context.user_data[
+            "new_task"
+        ] = {
+            "category": category,
+            "task_mode": mode
+        }
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_title"
+
+        await query.edit_message_text(
+            (
+                f"✅ Type: <b>{category}</b>\n\n"
+                "Send task title:"
+            ),
+            parse_mode="HTML"
+        )
+
+        return
