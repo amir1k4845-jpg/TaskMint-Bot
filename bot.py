@@ -1366,3 +1366,584 @@ async def process_withdraw(
             ),
             parse_mode="HTML"
             )
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📊 Statistics",
+                callback_data="admin_stats"
+            ),
+            InlineKeyboardButton(
+                "🎯 Manage Tasks",
+                callback_data="admin_tasks"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💳 Withdrawals",
+                callback_data="admin_withdrawals"
+            ),
+            InlineKeyboardButton(
+                "📥 Submissions",
+                callback_data="admin_submissions"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "👥 Users",
+                callback_data="admin_users"
+            ),
+            InlineKeyboardButton(
+                "💰 Balance Management",
+                callback_data="admin_balance"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⚙️ Bot Settings",
+                callback_data="admin_settings"
+            ),
+            InlineKeyboardButton(
+                "📢 Broadcast",
+                callback_data="admin_broadcast"
+            )
+        ]
+    ])
+
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    await update.message.reply_text(
+        (
+            "👑 <b>Admin Panel</b>\n\n"
+            "Select an option:"
+        ),
+        reply_markup=admin_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ADMIN CALLBACK
+# =========================================================
+
+async def admin_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+
+        await query.answer(
+            "❌ Unauthorized.",
+            show_alert=True
+        )
+
+        return
+
+    await query.answer()
+
+    data = query.data
+
+    if data == "admin_home":
+
+        await query.edit_message_text(
+            "👑 <b>Admin Panel</b>\n\n"
+            "Select an option:",
+            reply_markup=admin_keyboard(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # STATISTICS
+    # =====================================================
+
+    if data == "admin_stats":
+
+        total_users = users_collection.count_documents({})
+        total_tasks = tasks_collection.count_documents({})
+        pending_w = withdrawals_collection.count_documents(
+            {"status": "pending"}
+        )
+        pending_s = submissions_collection.count_documents(
+            {"status": "pending"}
+        )
+
+        await query.edit_message_text(
+            (
+                "📊 <b>Statistics</b>\n\n"
+                f"👥 Total Users: <b>{total_users}</b>\n"
+                f"🎯 Total Tasks: <b>{total_tasks}</b>\n"
+                f"🕐 Pending Withdrawals: <b>{pending_w}</b>\n"
+                f"📥 Pending Submissions: <b>{pending_s}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # TASK MANAGER
+    # =====================================================
+
+    if data == "admin_tasks":
+
+        active = tasks_collection.count_documents(
+            {"active": True}
+        )
+
+        inactive = tasks_collection.count_documents(
+            {"active": False}
+        )
+
+        await query.edit_message_text(
+            (
+                "🎯 <b>Manage Tasks & Slots</b>\n\n"
+                f"🟢 Active: <b>{active}</b>\n"
+                f"🔴 Inactive: <b>{inactive}</b>"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "➕ Add Task (with Slots)",
+                        callback_data="task_add"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📋 View/Delete Tasks",
+                        callback_data="task_list_admin"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔙 Back",
+                        callback_data="admin_home"
+                    )
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "task_add":
+
+        context.user_data[
+            "admin_action"
+        ] = "task_add_step1"
+
+        await query.edit_message_text(
+            "➕ <b>Add New Task</b>\n\n"
+            "Send task title:",
+            parse_mode="HTML"
+        )
+
+        return
+
+    if data == "task_list_admin":
+
+        tasks = list(
+            tasks_collection.find({})
+        )
+
+        if not tasks:
+
+            await query.edit_message_text(
+                "No tasks found.",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_tasks"
+                        )
+                    ]
+                ])
+            )
+
+            return
+
+        buttons = []
+
+        for t in tasks:
+
+            total_slots = int(
+                t.get(
+                    "total_slots",
+                    0
+                ) or 0
+            )
+
+            completed_slots = int(
+                t.get(
+                    "completed_slots",
+                    0
+                ) or 0
+            )
+
+            rem = (
+                total_slots
+                - completed_slots
+            )
+
+            title = escape(
+                str(
+                    t.get(
+                        "title",
+                        "Task"
+                    )
+                )
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    (
+                        f"[{'ON' if t.get('active', False) else 'OFF'}] "
+                        f"{title} "
+                        f"(Rem: {rem})"
+                    ),
+                    callback_data=(
+                        f"admin_deltask_{t['task_id']}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    "🗑 Delete",
+                    callback_data=(
+                        f"admin_rmtask_{t['task_id']}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_tasks"
+            )
+        ])
+
+        await query.edit_message_text(
+            "🎯 <b>Manage Tasks</b>",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # =====================================================
+    # TASK ON/OFF
+    # =====================================================
+
+    if data.startswith(
+        "admin_deltask_"
+    ):
+
+        tid = data.replace(
+            "admin_deltask_",
+            "",
+            1
+        )
+
+        t = tasks_collection.find_one(
+            {
+                "task_id": tid
+            }
+        )
+
+        if t:
+
+            new_status = not t.get(
+                "active",
+                True
+            )
+
+            tasks_collection.update_one(
+                {
+                    "task_id": tid
+                },
+                {
+                    "$set": {
+                        "active": new_status
+                    }
+                }
+            )
+
+        tasks = list(
+            tasks_collection.find({})
+        )
+
+        buttons = []
+
+        for t in tasks:
+
+            total_slots = int(
+                t.get(
+                    "total_slots",
+                    0
+                ) or 0
+            )
+
+            completed_slots = int(
+                t.get(
+                    "completed_slots",
+                    0
+                ) or 0
+            )
+
+            rem = (
+                total_slots
+                - completed_slots
+            )
+
+            title = escape(
+                str(
+                    t.get(
+                        "title",
+                        "Task"
+                    )
+                )
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    (
+                        f"[{'ON' if t.get('active', False) else 'OFF'}] "
+                        f"{title} (Rem: {rem})"
+                    ),
+                    callback_data=(
+                        f"admin_deltask_{t['task_id']}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    "🗑 Delete",
+                    callback_data=(
+                        f"admin_rmtask_{t['task_id']}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_tasks"
+            )
+        ])
+
+        await query.edit_message_text(
+            "Task status updated.",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+    # =====================================================
+    # DELETE TASK
+    # =====================================================
+
+    if data.startswith(
+        "admin_rmtask_"
+    ):
+
+        tid = data.replace(
+            "admin_rmtask_",
+            "",
+            1
+        )
+
+        tasks_collection.delete_one(
+            {
+                "task_id": tid
+            }
+        )
+
+        users_collection.update_many(
+            {
+                "completed_tasks": tid
+            },
+            {
+                "$pull": {
+                    "completed_tasks": tid
+                }
+            }
+        )
+
+        submissions_collection.delete_many(
+            {
+                "task_id": tid
+            }
+        )
+
+        await query.answer(
+            "🗑 Task deleted permanently!",
+            show_alert=True
+        )
+
+        tasks = list(
+            tasks_collection.find({})
+        )
+
+        buttons = []
+
+        for t in tasks:
+
+            total_slots = int(
+                t.get(
+                    "total_slots",
+                    0
+                ) or 0
+            )
+
+            completed_slots = int(
+                t.get(
+                    "completed_slots",
+                    0
+                ) or 0
+            )
+
+            rem = (
+                total_slots
+                - completed_slots
+            )
+
+            title = escape(
+                str(
+                    t.get(
+                        "title",
+                        "Task"
+                    )
+                )
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    (
+                        f"[{'ON' if t.get('active', False) else 'OFF'}] "
+                        f"{title} (Rem: {rem})"
+                    ),
+                    callback_data=(
+                        f"admin_deltask_{t['task_id']}"
+                    )
+                ),
+                InlineKeyboardButton(
+                    "🗑 Delete",
+                    callback_data=(
+                        f"admin_rmtask_{t['task_id']}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_tasks"
+            )
+        ])
+
+        await query.edit_message_text(
+            "Task deleted successfully.",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            )
+        )
+
+        return
+
+    # =====================================================
+    # SUBMISSIONS
+    # =====================================================
+
+    if data == "admin_submissions":
+
+        pending_subs = list(
+            submissions_collection.find(
+                {
+                    "status": "pending"
+                }
+            ).sort(
+                "created_at",
+                -1
+            ).limit(10)
+        )
+
+        if not pending_subs:
+
+            await query.edit_message_text(
+                (
+                    "📥 <b>Pending Submissions</b>\n\n"
+                    "No pending submissions."
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Back",
+                            callback_data="admin_home"
+                        )
+                    ]
+                ]),
+                parse_mode="HTML"
+            )
+
+            return
+
+        buttons = []
+
+        for sub in pending_subs:
+
+            sid = str(
+                sub["_id"]
+            )
+
+            buttons.append([
+                InlineKeyboardButton(
+                    f"User: {sub['user_id']}",
+                    callback_data=(
+                        f"sub_manage_{sid}"
+                    )
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data="admin_home"
+            )
+        ])
+
+        await query.edit_message_text(
+            (
+                "📥 <b>Pending Submissions</b>\n\n"
+                "Select a submission to review:"
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+            parse_mode="HTML"
+        )
+
+        return
